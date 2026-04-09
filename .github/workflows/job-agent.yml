@@ -1,0 +1,29 @@
+name: Job Search Agent
+
+on:
+  schedule:
+    - cron: '0 15 * * *'  # 7am Pacific Time (UTC-8) = 15:00 UTC
+  workflow_dispatch:        # manual trigger for testing
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic notion-client feedparser requests
+
+      - name: Run Job Agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: python job_agent.py
