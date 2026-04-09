@@ -5,6 +5,7 @@ import feedparser
 from datetime import datetime, timezone
 from notion_client import Client
 import os
+# VERSION 2 — all fixes applied 2026-04-09
 
 # ─────────────────────────────────────────────
 # PROFILE & SCORING CRITERIA
@@ -65,12 +66,26 @@ Score this job listing for Sofia on a scale of 1-10 using these weighted criteri
    - Solves real meaningful user problems (health, behavior change, social impact) → high score
    - Ability to influence end-to-end user journey → high score
 
-HARD EXCLUSIONS — return score 0 and action "exclude" if any of these apply:
-- Requires relocation
-- Requires US citizenship, US work permit, US work visa, or security clearance
-- Pure project management with no product ownership
-- Role is below Senior PM level (PM, Associate PM, Junior PM)
-- Salary explicitly stated and below CAD $120,000
+HARD EXCLUSIONS — return score 0 and action "exclude" ONLY if one of these is clearly and explicitly true:
+- Explicitly requires relocation (not just "office available")
+- Explicitly states US citizenship required, US work permit required, US work visa required, or security clearance required
+- Title is clearly below Senior PM level (e.g. "Product Manager", "Associate PM", "Junior PM") — NOT government equivalents
+- Salary is explicitly stated in the job posting AND is below CAD $120,000
+- US-based role that is explicitly NOT remote (e.g. "onsite only", "must work from our NYC office")
+- Canadian role outside BC that is explicitly NOT remote (e.g. in-office only in Toronto, Ottawa, Montreal, Calgary)
+
+KEEP — do NOT exclude these:
+- Remote anywhere in Canada
+- Remote US (open to or not excluding Canadian applicants)
+- In-office or hybrid in Vancouver metro: Vancouver, Burnaby, Port Moody, Surrey, Richmond,
+  North Vancouver, West Vancouver, Coquitlam, New Westminster, Langley, Maple Ridge
+- Any role where location or remote policy is unclear — score it and flag in red_flags instead
+- Government roles with equivalent titles (Director of Digital Services, Service Design Lead, etc.)
+
+DO NOT exclude based on:
+- Missing salary info (very common — just score it)
+- Unclear or ambiguous location (score it, flag uncertainty in red_flags)
+- Any doubt or ambiguity — when in doubt, score it and let Sofia decide
 
 APPLY MODE RULES:
 - Score 8-10 → action: "manual" (Sofia applies herself)
@@ -202,32 +217,64 @@ def push_to_notion(title, company, url, location, salary, date_posted, source, s
 def fetch_indeed():
     print("\n📡 Fetching Indeed Canada...")
     listings = []
-    queries = [
-        "Senior+Product+Manager",
-        "Lead+Product+Manager",
-        "Group+Product+Manager",
-        "Director+of+Product",
-        "VP+Product",
+    headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
+
+    # (query, location) pairs — all Canada-specific
+    # Includes government and crown corp searches
+    searches = [
+        # Senior PM roles — BC and remote Canada
+        ("Senior+Product+Manager", "Vancouver+BC"),
+        ("Senior+Product+Manager", "British+Columbia"),
+        ("Senior+Product+Manager", "Remote+Canada"),
+        ("Lead+Product+Manager", "Vancouver+BC"),
+        ("Lead+Product+Manager", "Remote+Canada"),
+        ("Group+Product+Manager", "Remote+Canada"),
+        ("Director+of+Product", "Vancouver+BC"),
+        ("Director+of+Product", "Remote+Canada"),
+        ("VP+of+Product", "Remote+Canada"),
+        ("Head+of+Product", "Vancouver+BC"),
+        ("Head+of+Product", "Remote+Canada"),
+        # Government — BC
+        ("Product+Manager", "BC+Public+Service"),
+        ("Director+Digital+Services", "British+Columbia"),
+        ("Service+Design+Lead", "British+Columbia"),
+        ("IT+Project+Manager+digital", "British+Columbia"),
+        # Crown corps — BC
+        ("Product+Manager", "BC+Hydro"),
+        ("Product+Manager", "TransLink+Vancouver"),
+        ("Product+Manager", "ICBC+British+Columbia"),
+        ("Product+Manager", "BC+Lottery+Corporation"),
+        # Federal government — remote eligible
+        ("Product+Manager+digital", "Government+of+Canada"),
+        ("Director+Digital", "Government+of+Canada"),
+        ("Senior+Analyst+digital+product", "Government+of+Canada"),
     ]
-    locations = ["Vancouver+BC", "British+Columbia", "Remote+Canada"]
-    for query in queries:
-        for loc in locations:
-            url = f"https://ca.indeed.com/rss?q={query}&l={loc}&sort=date"
-            try:
-                feed = feedparser.parse(url)
-                for entry in feed.entries[:10]:
-                    listings.append({
-                        "title": entry.get("title", ""),
-                        "company": entry.get("source", {}).get("title", "Unknown"),
-                        "url": entry.get("link", ""),
-                        "location": loc.replace("+", " "),
-                        "salary": "Not specified",
-                        "date_posted": entry.get("published", "Unknown"),
-                        "source": "Indeed Canada",
-                        "description": entry.get("summary", "")[:1500],
-                    })
-            except Exception as e:
-                print(f"  Indeed error ({query}/{loc}): {e}")
+
+    seen = set()
+    for query, location in searches:
+        # fromage=7 for first run (last 7 days)
+        # Change to fromage=1 for daily runs after first run
+        url = f"https://ca.indeed.com/rss?q={query}&l={location}&sort=date&fromage=7"
+        try:
+            feed = feedparser.parse(url, request_headers=headers)
+            for entry in feed.entries[:10]:
+                entry_url = entry.get("link", "")
+                if not entry_url or entry_url in seen:
+                    continue
+                seen.add(entry_url)
+                listings.append({
+                    "title": entry.get("title", ""),
+                    "company": entry.get("author", "Unknown"),
+                    "url": entry_url,
+                    "location": location.replace("+", " "),
+                    "salary": "Not specified",
+                    "date_posted": entry.get("published", "Unknown"),
+                    "source": "Indeed Canada",
+                    "description": entry.get("summary", "")[:1500],
+                })
+        except Exception as e:
+            print(f"  Indeed error ({query}/{location}): {e}")
+
     print(f"  Found {len(listings)} listings")
     return listings
 
@@ -264,79 +311,7 @@ def fetch_remoteok():
     return listings
 
 # ─────────────────────────────────────────────
-# SOURCE 3: BC PUBLIC SERVICE
-# ─────────────────────────────────────────────
-
-def fetch_bc_public_service():
-    print("\n📡 Fetching BC Public Service...")
-    listings = []
-    try:
-        url = "https://bcpublicservice.hua.hrsmart.com/hr/ats/JobSearch/search"
-        headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
-        params = {"keywords": "product manager director digital"}
-        response = requests.get(
-            "https://www.bcpublicservice.ca/careers/search-current-opportunities/",
-            headers=headers, timeout=15
-        )
-        # Parse basic job listings from BC Public Service RSS
-        feed = feedparser.parse("https://bcpublicservice.hua.hrsmart.com/hr/ats/JobSearch/viewAll")
-        for entry in feed.entries[:20]:
-            title = entry.get("title", "")
-            if any(kw in title.lower() for kw in [
-                "product", "digital", "director", "service design",
-                "business analyst", "it manager", "technology"
-            ]):
-                listings.append({
-                    "title": title,
-                    "company": "BC Public Service",
-                    "url": entry.get("link", "https://www.bcpublicservice.ca/careers/"),
-                    "location": "British Columbia (hybrid/in-office)",
-                    "salary": "As per BC Government pay grid",
-                    "date_posted": entry.get("published", "Unknown"),
-                    "source": "BC Public Service",
-                    "description": entry.get("summary", "")[:1500],
-                })
-    except Exception as e:
-        print(f"  BC Public Service error: {e}")
-    print(f"  Found {len(listings)} listings")
-    return listings
-
-# ─────────────────────────────────────────────
-# SOURCE 4: GC JOBS (FEDERAL CANADA)
-# ─────────────────────────────────────────────
-
-def fetch_gc_jobs():
-    print("\n📡 Fetching GC Jobs (Federal Canada)...")
-    listings = []
-    try:
-        feeds = [
-            "https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page1710?toggleLanguage=en&sender=displaySearchJob%40actionId%3D10&psrsMode=1&requestedPage=1710&searchJobType=0&searchCity=&searchOrganization=&searchKeyword=product+manager&keywordButton=Search&numOfResults=25",
-        ]
-        # GC Jobs RSS alternative
-        url = "https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page1710?toggleLanguage=en&psrsMode=1&searchKeyword=product+manager&numOfResults=25"
-        headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
-        feed = feedparser.parse(
-            "https://emploisfp-psjobs.cfp-psc.gc.ca/psrs-srfp/applicant/page1710?toggleLanguage=en&psrsMode=1&searchKeyword=digital+product&numOfResults=25&sender=displaySearchJob%40actionId%3D10&requestedPage=1710"
-        )
-        for entry in feed.entries[:20]:
-            title = entry.get("title", "")
-            listings.append({
-                "title": title,
-                "company": "Government of Canada",
-                "url": entry.get("link", "https://jobs-emplois.gc.ca/"),
-                "location": "Canada (remote eligible)",
-                "salary": "As per GC pay grid",
-                "date_posted": entry.get("published", "Unknown"),
-                "source": "GC Jobs Federal",
-                "description": entry.get("summary", "")[:1500],
-            })
-    except Exception as e:
-        print(f"  GC Jobs error: {e}")
-    print(f"  Found {len(listings)} listings")
-    return listings
-
-# ─────────────────────────────────────────────
-# SOURCE 5: LEVER API (COMPANY CAREER PAGES)
+# SOURCE 3: LEVER API (COMPANY CAREER PAGES)
 # ─────────────────────────────────────────────
 
 LEVER_COMPANIES = [
@@ -520,10 +495,8 @@ def run_agent():
 
     # Fetch from all sources
     all_listings = []
-    all_listings += fetch_indeed()
+    all_listings += fetch_indeed()          # includes gov + crown corp queries
     all_listings += fetch_remoteok()
-    all_listings += fetch_bc_public_service()
-    all_listings += fetch_gc_jobs()
     all_listings += fetch_lever_companies()
     all_listings += fetch_greenhouse_companies()
     all_listings += fetch_bc_tech()
@@ -577,7 +550,7 @@ def run_agent():
 
     print("\n" + "=" * 60)
     print(f"✅ Done! Pushed: {pushed} | Excluded: {excluded} | Errors: {errors}")
-    print(f"💰 Estimated API cost: ~${pushed * 0.001:.3f}")
+    print(f"💰 Estimated API cost: ~${(pushed + excluded) * 0.001:.3f}")
 
 if __name__ == "__main__":
     run_agent()
