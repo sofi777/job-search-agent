@@ -19,11 +19,12 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install anthropic notion-client feedparser requests
+        run: pip install anthropic "notion-client==2.2.1" feedparser requests google-search-results
 
       - name: Run Job Agent
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          SERP_API: ${{ secrets.SERP_API }}
         run: python job_agent.py
