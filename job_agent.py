@@ -5,8 +5,8 @@ import feedparser
 from datetime import datetime, timezone
 from notion_client import Client
 import os
-# VERSION 4 — 2026-04-10
-# Fixes: correct ATS slugs, Ashby support, Notion dedup fix, Greenhouse endpoint fix
+# VERSION 5 — 2026-04-10
+# Fixes: US hybrid/in-office filter, Spring Health removed from Lever, notion-client pinned
 
 # ─────────────────────────────────────────────
 # TEST MODE
@@ -138,15 +138,31 @@ NON_NA_SIGNALS = [
     "latin america", "apac", "emea", "europe", "asia",
 ]
 
-def is_north_america(location: str) -> bool:
+US_CITIES = [
+    "new york", "san francisco", "los angeles", "chicago", "boston",
+    "austin", "seattle", "denver", "atlanta", "miami", "dallas",
+    "portland", "philadelphia", "washington dc", "washington, dc",
+    "minneapolis", "phoenix", "san diego", "nashville", "raleigh",
+]
+INOFFICE_SIGNALS = ["hybrid", "onsite", "on-site", "in office", "in-office"]
+
+def is_workable_location(location: str) -> bool:
+    """
+    Stage 1: Reject non-North-America.
+    Stage 2: Reject US in-office/hybrid (Sofia cannot commute from Vancouver).
+    Keep: remote anywhere, BC office/hybrid, Canada, unknown.
+    """
     if not location or location.strip() == "":
         return True
     loc = location.lower()
+    # Stage 1: hard reject non-NA
     if any(signal in loc for signal in NON_NA_SIGNALS):
         return False
-    if any(signal in loc for signal in NA_SIGNALS):
-        return True
-    return True  # unknown — pass to Claude
+    # Stage 2: reject US city + hybrid/onsite without remote mention
+    if "remote" not in loc:
+        if any(city in loc for city in US_CITIES) and any(sig in loc for sig in INOFFICE_SIGNALS):
+            return False
+    return True
 
 # ─────────────────────────────────────────────
 # DEDUPLICATION
@@ -542,8 +558,8 @@ LEVER_COMPANIES = [
     ("pointclickcare", "PointClickCare"),
     ("smiledigitalhealth", "Smile Digital Health"),
     ("includedhealth", "Included Health"),
-    ("springhealth", "Spring Health"),
     ("swordhealth", "Sword Health"),
+    # Spring Health removed — fully moved to Greenhouse (springhealth66)
 ]
 
 def fetch_lever_companies():
@@ -859,16 +875,16 @@ def run_agent():
 
     print(f"\n📊 Total raw listings fetched: {len(all_listings)}")
 
-    # Step 1: Location filter
+    # Step 1: Location filter — reject non-NA and US in-office/hybrid
     na_filtered = []
     location_rejected = 0
     for listing in all_listings:
-        if is_north_america(listing.get("location", "")):
+        if is_workable_location(listing.get("location", "")):
             na_filtered.append(listing)
         else:
             print(f"  🌍 Rejected: {listing['title']} @ {listing['company']} — {listing['location']}")
             location_rejected += 1
-    print(f"📊 After NA filter: {len(na_filtered)} kept, {location_rejected} rejected")
+    print(f"📊 After location filter: {len(na_filtered)} kept, {location_rejected} rejected")
 
     # Step 2: Deduplicate
     seen_urls = set()
