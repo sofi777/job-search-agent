@@ -5,7 +5,16 @@ import feedparser
 from datetime import datetime, timezone
 from notion_client import Client
 import os
-# VERSION 2 — all fixes applied 2026-04-09
+# VERSION 3 — 2026-04-10
+# Changes: TEST_MODE, SerpAPI Indeed + gov sources, NA location filter, verbose logging
+
+# ─────────────────────────────────────────────
+# TEST MODE
+# True  = no SerpAPI calls, no Claude calls, Notion push still runs
+# False = full production run
+# ─────────────────────────────────────────────
+
+TEST_MODE = True  # ← flip to False when ready for real run
 
 # ─────────────────────────────────────────────
 # PROFILE & SCORING CRITERIA
@@ -28,7 +37,7 @@ stakeholder management, cross-functional leadership, data-driven decisions, cons
 
 Target roles: Senior PM, Lead PM, Group PM, Director of Product, VP of Product
 Minimum salary: CAD $120,000 (no ceiling)
-Location: Remote (Canada or US if open to Canadian applicants), or hybrid/in-office in BC
+Location: Remote Canada, remote US (if open to Canadian applicants), or hybrid/in-office in BC
 
 Industry preferences (for scoring):
 - TOP TIER: Healthtech, wellness, longevity, senior care
@@ -101,6 +110,53 @@ APPLY MODE RULES:
 anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 notion = Client(auth=os.environ["NOTION_TOKEN"])
 DB_ID = os.environ["NOTION_DATABASE_ID"]
+SERP_API_KEY = os.environ.get("SERP_API", "")
+
+# ─────────────────────────────────────────────
+# LOCATION FILTER — North America allowlist
+# Applied in Python BEFORE calling Claude
+# Saves API calls on clearly non-NA jobs
+# ─────────────────────────────────────────────
+
+# Signals that confirm North America
+NA_SIGNALS = [
+    "canada", "canadian", "british columbia", "bc", "vancouver", "burnaby",
+    "victoria", "surrey", "richmond", "coquitlam", "north vancouver",
+    "west vancouver", "port moody", "new westminster", "langley", "maple ridge",
+    "ontario", "toronto", "alberta", "calgary", "quebec", "montreal",
+    "united states", "usa", "us", "new york", "san francisco", "seattle",
+    "california", "texas", "remote", "north america", "anywhere",
+    "not specified", "not disclosed",
+]
+
+# Signals that confirm non-North America — reject immediately
+NON_NA_SIGNALS = [
+    "portugal", "porto", "lisbon", "uk", "united kingdom", "london",
+    "germany", "berlin", "munich", "france", "paris", "spain", "madrid",
+    "barcelona", "amsterdam", "netherlands", "sweden", "stockholm",
+    "denmark", "copenhagen", "norway", "oslo", "finland", "helsinki",
+    "ireland", "dublin", "australia", "sydney", "melbourne", "new zealand",
+    "india", "bangalore", "mumbai", "singapore", "hong kong", "japan",
+    "tokyo", "china", "beijing", "shanghai", "brazil", "mexico",
+    "latin america", "apac", "emea", "europe", "asia",
+]
+
+def is_north_america(location: str) -> bool:
+    """
+    Returns True if location is confirmed NA or unknown (pass to Claude).
+    Returns False only if location explicitly signals non-NA.
+    """
+    if not location or location.strip() == "":
+        return True  # unknown — pass to Claude to flag
+    loc = location.lower()
+    # Reject if any non-NA signal found
+    if any(signal in loc for signal in NON_NA_SIGNALS):
+        return False
+    # Accept if any NA signal found
+    if any(signal in loc for signal in NA_SIGNALS):
+        return True
+    # Unknown location — pass to Claude
+    return True
 
 # ─────────────────────────────────────────────
 # DEDUPLICATION
@@ -125,15 +181,31 @@ def get_existing_urls():
             has_more = response.get("has_more", False)
             start_cursor = response.get("next_cursor")
     except Exception as e:
-        print(f"Warning: could not fetch existing URLs: {e}")
+        print(f"  ⚠️  Warning: could not fetch existing URLs: {e}")
     return existing
 
 # ─────────────────────────────────────────────
 # SCORING
 # ─────────────────────────────────────────────
 
+FAKE_SCORE = {
+    "score": 7,
+    "action": "auto",
+    "industry": "TEST MODE — Healthtech",
+    "match_reason": "TEST MODE — not a real score",
+    "why_you_fit": "TEST MODE — not a real assessment",
+    "red_flags": "None",
+    "job_description_summary": "TEST MODE — this is a fake job description summary.",
+    "company_summary": "TEST MODE — this is a fake company summary.",
+    "us_open_to_canadians": None,
+}
+
 def score_job(title, description, company, salary="Not specified", location="Not specified"):
-    """Score a job listing using Claude Haiku."""
+    """Score a job listing using Claude Haiku. Returns fake score in TEST_MODE."""
+    if TEST_MODE:
+        print(f"  🧪 TEST MODE — skipping Claude, returning fake score")
+        return FAKE_SCORE
+
     prompt = f"""You are a job relevance scorer. Score this job for the candidate below.
 Return ONLY a valid JSON object — no preamble, no markdown fences, no extra text.
 
@@ -168,14 +240,13 @@ Return exactly this JSON shape:
             messages=[{"role": "user", "content": prompt}]
         )
         text = response.content[0].text.strip()
-        # Strip markdown fences if Claude adds them despite instructions
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
         return json.loads(text.strip())
     except Exception as e:
-        print(f"  Scoring error for {title}: {e}")
+        print(f"  ❌ Scoring error for {title}: {e}")
         return None
 
 # ─────────────────────────────────────────────
@@ -211,75 +282,326 @@ def push_to_notion(title, company, url, location, salary, date_posted, source, s
         print(f"  ❌ Notion push error for {title}: {e}")
 
 # ─────────────────────────────────────────────
-# SOURCE 1: INDEED CANADA RSS
+# SOURCE 1: SERPAPI — INDEED CANADA
+# Replaces direct Indeed RSS (blocked on GitHub IPs)
 # ─────────────────────────────────────────────
 
-def fetch_indeed():
-    print("\n📡 Fetching Indeed Canada...")
-    listings = []
-    headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
+SERP_JOB_QUERY = (
+    '"senior product manager" OR "lead product manager" OR '
+    '"group product manager" OR "director of product" OR '
+    '"head of product" OR "VP of product" OR '
+    '"senior product owner" OR "lead product owner"'
+)
 
-    # (query, location) pairs — all Canada-specific
-    # Includes government and crown corp searches
-    searches = [
-        # Senior PM roles — BC and remote Canada
-        ("Senior+Product+Manager", "Vancouver+BC"),
-        ("Senior+Product+Manager", "British+Columbia"),
-        ("Senior+Product+Manager", "Remote+Canada"),
-        ("Lead+Product+Manager", "Vancouver+BC"),
-        ("Lead+Product+Manager", "Remote+Canada"),
-        ("Group+Product+Manager", "Remote+Canada"),
-        ("Director+of+Product", "Vancouver+BC"),
-        ("Director+of+Product", "Remote+Canada"),
-        ("VP+of+Product", "Remote+Canada"),
-        ("Head+of+Product", "Vancouver+BC"),
-        ("Head+of+Product", "Remote+Canada"),
-        # Government — BC
-        ("Product+Manager", "BC+Public+Service"),
-        ("Director+Digital+Services", "British+Columbia"),
-        ("Service+Design+Lead", "British+Columbia"),
-        ("IT+Project+Manager+digital", "British+Columbia"),
-        # Crown corps — BC
-        ("Product+Manager", "BC+Hydro"),
-        ("Product+Manager", "TransLink+Vancouver"),
-        ("Product+Manager", "ICBC+British+Columbia"),
-        ("Product+Manager", "BC+Lottery+Corporation"),
-        # Federal government — remote eligible
-        ("Product+Manager+digital", "Government+of+Canada"),
-        ("Director+Digital", "Government+of+Canada"),
-        ("Senior+Analyst+digital+product", "Government+of+Canada"),
+SERP_GOV_QUERY = (
+    '"senior product manager" OR "product owner" OR '
+    '"director digital services" OR "service design lead" OR '
+    '"IT project manager"'
+)
+
+FAKE_SERP_LISTINGS = [
+    {
+        "title": "Senior Product Manager — Digital Health (TEST)",
+        "company": "Test Company Canada",
+        "url": "https://example.com/job/test-1",
+        "location": "Vancouver, BC",
+        "salary": "CAD $140,000",
+        "date_posted": datetime.now().strftime("%Y-%m-%d"),
+        "source": "SerpAPI / Indeed Canada (TEST)",
+        "description": "This is a fake job listing generated in TEST_MODE. No real API call was made.",
+    },
+    {
+        "title": "Lead Product Manager — AI Platform (TEST)",
+        "company": "Test Healthtech Inc",
+        "url": "https://example.com/job/test-2",
+        "location": "Remote Canada",
+        "salary": "Not specified",
+        "date_posted": datetime.now().strftime("%Y-%m-%d"),
+        "source": "SerpAPI / Indeed Canada (TEST)",
+        "description": "Another fake listing in TEST_MODE. Flip TEST_MODE = False for real results.",
+    },
+]
+
+def fetch_serpapi_indeed():
+    """Fetch Indeed Canada jobs via SerpAPI. Returns fake data in TEST_MODE."""
+    print("\n📡 Fetching Indeed Canada via SerpAPI...")
+
+    if TEST_MODE:
+        print(f"  🧪 TEST MODE — returning {len(FAKE_SERP_LISTINGS)} fake listings")
+        return FAKE_SERP_LISTINGS
+
+    if not SERP_API_KEY:
+        print("  ⚠️  SERP_API secret not set — skipping")
+        return []
+
+    listings = []
+    params_list = [
+        {
+            "engine": "google_jobs",
+            "q": SERP_JOB_QUERY,
+            "location": "Canada",
+            "gl": "ca",
+            "hl": "en",
+            "chips": "date_posted:week",
+            "api_key": SERP_API_KEY,
+        },
     ]
 
-    seen = set()
-    for query, location in searches:
-        # fromage=7 for first run (last 7 days)
-        # Change to fromage=1 for daily runs after first run
-        url = f"https://ca.indeed.com/rss?q={query}&l={location}&sort=date&fromage=7"
+    for params in params_list:
         try:
-            feed = feedparser.parse(url, request_headers=headers)
-            for entry in feed.entries[:10]:
-                entry_url = entry.get("link", "")
-                if not entry_url or entry_url in seen:
-                    continue
-                seen.add(entry_url)
+            response = requests.get(
+                "https://serpapi.com/search",
+                params=params,
+                timeout=15
+            )
+            print(f"  SerpAPI Indeed status: {response.status_code}")
+            if response.status_code != 200:
+                print(f"  ⚠️  SerpAPI error: {response.text[:200]}")
+                continue
+            data = response.json()
+            jobs = data.get("jobs_results", [])
+            print(f"  Raw results returned: {len(jobs)}")
+            for job in jobs:
+                location = job.get("location", "Not specified")
+                detected_via = job.get("detected_extensions", {})
+                salary = detected_via.get("salary", "Not specified")
+                date_posted = detected_via.get("posted_at", "Unknown")
                 listings.append({
-                    "title": entry.get("title", ""),
-                    "company": entry.get("author", "Unknown"),
-                    "url": entry_url,
-                    "location": location.replace("+", " "),
-                    "salary": "Not specified",
-                    "date_posted": entry.get("published", "Unknown"),
-                    "source": "Indeed Canada",
-                    "description": entry.get("summary", "")[:1500],
+                    "title": job.get("title", ""),
+                    "company": job.get("company_name", "Unknown"),
+                    "url": job.get("share_link", job.get("related_links", [{}])[0].get("link", "")),
+                    "location": location,
+                    "salary": salary,
+                    "date_posted": date_posted,
+                    "source": "SerpAPI / Indeed Canada",
+                    "description": job.get("description", "")[:1500],
                 })
         except Exception as e:
-            print(f"  Indeed error ({query}/{location}): {e}")
+            print(f"  ❌ SerpAPI Indeed error: {e}")
 
     print(f"  Found {len(listings)} listings")
     return listings
 
 # ─────────────────────────────────────────────
-# SOURCE 2: REMOTEOK RSS
+# SOURCE 2: SERPAPI — BC PUBLIC SERVICE
+# ─────────────────────────────────────────────
+
+def fetch_serpapi_bc_gov():
+    """Fetch BC Public Service jobs via SerpAPI."""
+    print("\n📡 Fetching BC Public Service via SerpAPI...")
+
+    if TEST_MODE:
+        print(f"  🧪 TEST MODE — skipping SerpAPI call")
+        return []
+
+    if not SERP_API_KEY:
+        print("  ⚠️  SERP_API secret not set — skipping")
+        return []
+
+    listings = []
+    params = {
+        "engine": "google_jobs",
+        "q": f"{SERP_GOV_QUERY} site:bcpublicservice.ca",
+        "gl": "ca",
+        "hl": "en",
+        "chips": "date_posted:month",
+        "api_key": SERP_API_KEY,
+    }
+    try:
+        response = requests.get("https://serpapi.com/search", params=params, timeout=15)
+        print(f"  SerpAPI BC Gov status: {response.status_code}")
+        if response.status_code != 200:
+            print(f"  ⚠️  SerpAPI error: {response.text[:200]}")
+            return []
+        data = response.json()
+        jobs = data.get("jobs_results", [])
+        print(f"  Raw results returned: {len(jobs)}")
+        for job in jobs:
+            detected_via = job.get("detected_extensions", {})
+            listings.append({
+                "title": job.get("title", ""),
+                "company": "BC Public Service",
+                "url": job.get("share_link", "https://www.bcpublicservice.ca/careers/"),
+                "location": job.get("location", "British Columbia"),
+                "salary": detected_via.get("salary", "As per BC Government pay grid"),
+                "date_posted": detected_via.get("posted_at", "Unknown"),
+                "source": "SerpAPI / BC Public Service",
+                "description": job.get("description", "")[:1500],
+            })
+    except Exception as e:
+        print(f"  ❌ SerpAPI BC Gov error: {e}")
+
+    print(f"  Found {len(listings)} listings")
+    return listings
+
+# ─────────────────────────────────────────────
+# SOURCE 3: SERPAPI — GOVERNMENT OF CANADA
+# ─────────────────────────────────────────────
+
+def fetch_serpapi_gc_jobs():
+    """Fetch Government of Canada jobs via SerpAPI."""
+    print("\n📡 Fetching Government of Canada via SerpAPI...")
+
+    if TEST_MODE:
+        print(f"  🧪 TEST MODE — skipping SerpAPI call")
+        return []
+
+    if not SERP_API_KEY:
+        print("  ⚠️  SERP_API secret not set — skipping")
+        return []
+
+    listings = []
+    params = {
+        "engine": "google_jobs",
+        "q": f"{SERP_GOV_QUERY} site:jobs-emplois.gc.ca",
+        "gl": "ca",
+        "hl": "en",
+        "chips": "date_posted:month",
+        "api_key": SERP_API_KEY,
+    }
+    try:
+        response = requests.get("https://serpapi.com/search", params=params, timeout=15)
+        print(f"  SerpAPI GC Jobs status: {response.status_code}")
+        if response.status_code != 200:
+            print(f"  ⚠️  SerpAPI error: {response.text[:200]}")
+            return []
+        data = response.json()
+        jobs = data.get("jobs_results", [])
+        print(f"  Raw results returned: {len(jobs)}")
+        for job in jobs:
+            detected_via = job.get("detected_extensions", {})
+            listings.append({
+                "title": job.get("title", ""),
+                "company": "Government of Canada",
+                "url": job.get("share_link", "https://jobs-emplois.gc.ca/"),
+                "location": job.get("location", "Canada (remote eligible)"),
+                "salary": detected_via.get("salary", "As per GC pay grid"),
+                "date_posted": detected_via.get("posted_at", "Unknown"),
+                "source": "SerpAPI / GC Jobs",
+                "description": job.get("description", "")[:1500],
+            })
+    except Exception as e:
+        print(f"  ❌ SerpAPI GC Jobs error: {e}")
+
+    print(f"  Found {len(listings)} listings")
+    return listings
+
+# ─────────────────────────────────────────────
+# SOURCE 4: SERPAPI — BC HEALTH AUTHORITIES
+# ─────────────────────────────────────────────
+
+def fetch_serpapi_health_authorities():
+    """Fetch BC Health Authority jobs via SerpAPI."""
+    print("\n📡 Fetching BC Health Authorities via SerpAPI...")
+
+    if TEST_MODE:
+        print(f"  🧪 TEST MODE — skipping SerpAPI call")
+        return []
+
+    if not SERP_API_KEY:
+        print("  ⚠️  SERP_API secret not set — skipping")
+        return []
+
+    listings = []
+    params = {
+        "engine": "google_jobs",
+        "q": (
+            '("product manager" OR "product owner" OR "director digital") '
+            '("Fraser Health" OR "Vancouver Coastal Health" OR "Providence Health" '
+            'OR "BC Cancer" OR "PHSA" OR "Island Health" OR "Interior Health")'
+        ),
+        "location": "British Columbia, Canada",
+        "gl": "ca",
+        "hl": "en",
+        "chips": "date_posted:month",
+        "api_key": SERP_API_KEY,
+    }
+    try:
+        response = requests.get("https://serpapi.com/search", params=params, timeout=15)
+        print(f"  SerpAPI Health Authorities status: {response.status_code}")
+        if response.status_code != 200:
+            print(f"  ⚠️  SerpAPI error: {response.text[:200]}")
+            return []
+        data = response.json()
+        jobs = data.get("jobs_results", [])
+        print(f"  Raw results returned: {len(jobs)}")
+        for job in jobs:
+            detected_via = job.get("detected_extensions", {})
+            listings.append({
+                "title": job.get("title", ""),
+                "company": job.get("company_name", "BC Health Authority"),
+                "url": job.get("share_link", ""),
+                "location": job.get("location", "British Columbia"),
+                "salary": detected_via.get("salary", "Not specified"),
+                "date_posted": detected_via.get("posted_at", "Unknown"),
+                "source": "SerpAPI / BC Health Authorities",
+                "description": job.get("description", "")[:1500],
+            })
+    except Exception as e:
+        print(f"  ❌ SerpAPI Health Authorities error: {e}")
+
+    print(f"  Found {len(listings)} listings")
+    return listings
+
+# ─────────────────────────────────────────────
+# SOURCE 5: SERPAPI — BC MUNICIPAL + POLICE
+# ─────────────────────────────────────────────
+
+def fetch_serpapi_municipal():
+    """Fetch BC Municipal and Police jobs via SerpAPI."""
+    print("\n📡 Fetching BC Municipal + Police via SerpAPI...")
+
+    if TEST_MODE:
+        print(f"  🧪 TEST MODE — skipping SerpAPI call")
+        return []
+
+    if not SERP_API_KEY:
+        print("  ⚠️  SERP_API secret not set — skipping")
+        return []
+
+    listings = []
+    params = {
+        "engine": "google_jobs",
+        "q": (
+            '("product manager" OR "product owner" OR "director digital") '
+            '("City of Vancouver" OR "Metro Vancouver" OR "Vancouver Police" '
+            'OR "City of Burnaby" OR "City of Surrey" OR "TransLink")'
+        ),
+        "location": "British Columbia, Canada",
+        "gl": "ca",
+        "hl": "en",
+        "chips": "date_posted:month",
+        "api_key": SERP_API_KEY,
+    }
+    try:
+        response = requests.get("https://serpapi.com/search", params=params, timeout=15)
+        print(f"  SerpAPI Municipal status: {response.status_code}")
+        if response.status_code != 200:
+            print(f"  ⚠️  SerpAPI error: {response.text[:200]}")
+            return []
+        data = response.json()
+        jobs = data.get("jobs_results", [])
+        print(f"  Raw results returned: {len(jobs)}")
+        for job in jobs:
+            detected_via = job.get("detected_extensions", {})
+            listings.append({
+                "title": job.get("title", ""),
+                "company": job.get("company_name", "BC Municipality"),
+                "url": job.get("share_link", ""),
+                "location": job.get("location", "British Columbia"),
+                "salary": detected_via.get("salary", "Not specified"),
+                "date_posted": detected_via.get("posted_at", "Unknown"),
+                "source": "SerpAPI / BC Municipal",
+                "description": job.get("description", "")[:1500],
+            })
+    except Exception as e:
+        print(f"  ❌ SerpAPI Municipal error: {e}")
+
+    print(f"  Found {len(listings)} listings")
+    return listings
+
+# ─────────────────────────────────────────────
+# SOURCE 6: REMOTEOK
 # ─────────────────────────────────────────────
 
 def fetch_remoteok():
@@ -287,13 +609,21 @@ def fetch_remoteok():
     listings = []
     try:
         headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
-        response = requests.get("https://remoteok.com/remote-product-manager-jobs.json", headers=headers, timeout=10)
+        response = requests.get(
+            "https://remoteok.com/remote-product-manager-jobs.json",
+            headers=headers,
+            timeout=10
+        )
+        print(f"  RemoteOK status: {response.status_code}")
         jobs = response.json()
-        for job in jobs[1:30]:  # skip first item (metadata)
+        print(f"  Raw results returned: {len(jobs) - 1}")
+        for job in jobs[1:30]:
             if not isinstance(job, dict):
                 continue
             title = job.get("position", "")
-            if not any(kw in title.lower() for kw in ["senior", "lead", "group", "director", "vp", "principal", "head"]):
+            if not any(kw in title.lower() for kw in [
+                "senior", "lead", "group", "director", "vp", "principal", "head"
+            ]):
                 continue
             listings.append({
                 "title": title,
@@ -306,12 +636,12 @@ def fetch_remoteok():
                 "description": job.get("description", "")[:1500],
             })
     except Exception as e:
-        print(f"  RemoteOK error: {e}")
-    print(f"  Found {len(listings)} listings")
+        print(f"  ❌ RemoteOK error: {e}")
+    print(f"  Found {len(listings)} listings after title filter")
     return listings
 
 # ─────────────────────────────────────────────
-# SOURCE 3: LEVER API (COMPANY CAREER PAGES)
+# SOURCE 7: LEVER API (COMPANY CAREER PAGES)
 # ─────────────────────────────────────────────
 
 LEVER_COMPANIES = [
@@ -335,16 +665,21 @@ def fetch_lever_companies():
     listings = []
     headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
     senior_keywords = ["senior", "lead", "group", "director", "vp", "principal", "head of", "staff"]
-    pm_keywords = ["product manager", "product lead", "head of product", "director of product", "vp of product", "vp product"]
+    pm_keywords = [
+        "product manager", "product lead", "head of product",
+        "director of product", "vp of product", "vp product", "product owner"
+    ]
 
     for slug, company_name in LEVER_COMPANIES:
         try:
             url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
             response = requests.get(url, headers=headers, timeout=10)
+            print(f"  {company_name}: HTTP {response.status_code}", end="")
             if response.status_code != 200:
-                print(f"  {company_name}: status {response.status_code}")
+                print()
                 continue
             jobs = response.json()
+            matched = 0
             for job in jobs:
                 title = job.get("text", "").lower()
                 if not any(kw in title for kw in pm_keywords):
@@ -353,6 +688,7 @@ def fetch_lever_companies():
                     continue
                 categories = job.get("categories", {})
                 location = categories.get("location", "Not specified")
+                matched += 1
                 listings.append({
                     "title": job.get("text", ""),
                     "company": company_name,
@@ -365,13 +701,15 @@ def fetch_lever_companies():
                     "source": f"Lever / {company_name}",
                     "description": job.get("descriptionPlain", "")[:1500],
                 })
+            print(f" → {len(jobs)} total, {matched} matched")
         except Exception as e:
-            print(f"  {company_name} Lever error: {e}")
-    print(f"  Found {len(listings)} listings")
+            print(f"\n  ❌ {company_name} Lever error: {e}")
+
+    print(f"  Total from Lever: {len(listings)} listings")
     return listings
 
 # ─────────────────────────────────────────────
-# SOURCE 6: GREENHOUSE API (COMPANY CAREER PAGES)
+# SOURCE 8: GREENHOUSE API (COMPANY CAREER PAGES)
 # ─────────────────────────────────────────────
 
 GREENHOUSE_COMPANIES = [
@@ -390,17 +728,22 @@ def fetch_greenhouse_companies():
     listings = []
     headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
     senior_keywords = ["senior", "lead", "group", "director", "vp", "principal", "head of", "staff"]
-    pm_keywords = ["product manager", "product lead", "head of product", "director of product", "vp of product", "vp product"]
+    pm_keywords = [
+        "product manager", "product lead", "head of product",
+        "director of product", "vp of product", "vp product", "product owner"
+    ]
 
     for slug, company_name in GREENHOUSE_COMPANIES:
         try:
             url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
             response = requests.get(url, headers=headers, timeout=10)
+            print(f"  {company_name}: HTTP {response.status_code}", end="")
             if response.status_code != 200:
-                print(f"  {company_name}: status {response.status_code}")
+                print()
                 continue
             data = response.json()
             jobs = data.get("jobs", [])
+            matched = 0
             for job in jobs:
                 title = job.get("title", "").lower()
                 if not any(kw in title for kw in pm_keywords):
@@ -408,7 +751,7 @@ def fetch_greenhouse_companies():
                 if not any(kw in title for kw in senior_keywords):
                     continue
                 location = job.get("location", {}).get("name", "Not specified")
-                description = job.get("content", "")[:1500]
+                matched += 1
                 listings.append({
                     "title": job.get("title", ""),
                     "company": company_name,
@@ -417,15 +760,17 @@ def fetch_greenhouse_companies():
                     "salary": "Not specified",
                     "date_posted": job.get("updated_at", "Unknown")[:10],
                     "source": f"Greenhouse / {company_name}",
-                    "description": description,
+                    "description": job.get("content", "")[:1500],
                 })
+            print(f" → {len(jobs)} total, {matched} matched")
         except Exception as e:
-            print(f"  {company_name} Greenhouse error: {e}")
-    print(f"  Found {len(listings)} listings")
+            print(f"\n  ❌ {company_name} Greenhouse error: {e}")
+
+    print(f"  Total from Greenhouse: {len(listings)} listings")
     return listings
 
 # ─────────────────────────────────────────────
-# SOURCE 7: BC TECH ASSOCIATION
+# SOURCE 9: BC TECH ASSOCIATION
 # ─────────────────────────────────────────────
 
 def fetch_bc_tech():
@@ -433,10 +778,16 @@ def fetch_bc_tech():
     listings = []
     try:
         headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
-        feed = feedparser.parse("https://www.bctechnology.com/rss/jobs.cfm")
+        feed = feedparser.parse(
+            "https://www.bctechnology.com/rss/jobs.cfm",
+            request_headers=headers
+        )
+        print(f"  BC Tech RSS entries: {len(feed.entries)}")
         for entry in feed.entries[:30]:
             title = entry.get("title", "")
-            if any(kw in title.lower() for kw in ["product", "director", "vp", "lead"]):
+            if any(kw in title.lower() for kw in [
+                "product", "director", "vp", "lead", "digital", "design"
+            ]):
                 listings.append({
                     "title": title,
                     "company": entry.get("author", "Unknown"),
@@ -448,23 +799,27 @@ def fetch_bc_tech():
                     "description": entry.get("summary", "")[:1500],
                 })
     except Exception as e:
-        print(f"  BC Tech error: {e}")
-    print(f"  Found {len(listings)} listings")
+        print(f"  ❌ BC Tech error: {e}")
+    print(f"  Found {len(listings)} listings after title filter")
     return listings
 
 # ─────────────────────────────────────────────
-# SOURCE 8: WELLFOUND
+# SOURCE 10: WELLFOUND
 # ─────────────────────────────────────────────
 
 def fetch_wellfound():
     print("\n📡 Fetching Wellfound...")
     listings = []
     try:
-        # Wellfound public RSS for PM roles in Canada
-        feed = feedparser.parse("https://wellfound.com/role/l/product-manager/canada-startups.rss")
+        feed = feedparser.parse(
+            "https://wellfound.com/role/l/product-manager/canada-startups.rss"
+        )
+        print(f"  Wellfound RSS entries: {len(feed.entries)}")
         for entry in feed.entries[:20]:
             title = entry.get("title", "")
-            if any(kw in title.lower() for kw in ["senior", "lead", "director", "vp", "group", "principal", "head"]):
+            if any(kw in title.lower() for kw in [
+                "senior", "lead", "director", "vp", "group", "principal", "head"
+            ]):
                 listings.append({
                     "title": title,
                     "company": entry.get("author", "Unknown"),
@@ -476,8 +831,8 @@ def fetch_wellfound():
                     "description": entry.get("summary", "")[:1500],
                 })
     except Exception as e:
-        print(f"  Wellfound error: {e}")
-    print(f"  Found {len(listings)} listings")
+        print(f"  ❌ Wellfound error: {e}")
+    print(f"  Found {len(listings)} listings after title filter")
     return listings
 
 # ─────────────────────────────────────────────
@@ -485,17 +840,22 @@ def fetch_wellfound():
 # ─────────────────────────────────────────────
 
 def run_agent():
-    print(f"\n🚀 Job Search Agent starting — {datetime.now().strftime('%Y-%m-%d %H:%M')} PT")
+    mode_label = "🧪 TEST MODE" if TEST_MODE else "🚀 PRODUCTION"
+    print(f"\n{mode_label} — Job Search Agent starting — {datetime.now().strftime('%Y-%m-%d %H:%M')} PT")
     print("=" * 60)
 
     # Get existing URLs to avoid duplicates
     print("\n🔍 Checking existing Notion entries for deduplication...")
     existing_urls = get_existing_urls()
-    print(f"  Found {len(existing_urls)} existing entries")
+    print(f"  Found {len(existing_urls)} existing entries in Notion")
 
     # Fetch from all sources
     all_listings = []
-    all_listings += fetch_indeed()          # includes gov + crown corp queries
+    all_listings += fetch_serpapi_indeed()
+    all_listings += fetch_serpapi_bc_gov()
+    all_listings += fetch_serpapi_gc_jobs()
+    all_listings += fetch_serpapi_health_authorities()
+    all_listings += fetch_serpapi_municipal()
     all_listings += fetch_remoteok()
     all_listings += fetch_lever_companies()
     all_listings += fetch_greenhouse_companies()
@@ -504,24 +864,34 @@ def run_agent():
 
     print(f"\n📊 Total raw listings fetched: {len(all_listings)}")
 
-    # Deduplicate by URL
+    # Step 1: Location filter — North America only
+    na_filtered = []
+    location_rejected = 0
+    for listing in all_listings:
+        if is_north_america(listing.get("location", "")):
+            na_filtered.append(listing)
+        else:
+            print(f"  🌍 Location rejected: {listing['title']} @ {listing['company']} — {listing['location']}")
+            location_rejected += 1
+    print(f"📊 After NA location filter: {len(na_filtered)} kept, {location_rejected} rejected")
+
+    # Step 2: Deduplicate by URL
     seen_urls = set()
     unique_listings = []
-    for listing in all_listings:
+    for listing in na_filtered:
         url = listing.get("url", "")
         if url and url not in existing_urls and url not in seen_urls:
             seen_urls.add(url)
             unique_listings.append(listing)
+    print(f"📊 After deduplication: {len(unique_listings)} new unique listings to score")
 
-    print(f"📊 New unique listings to score: {len(unique_listings)}")
-
-    # Score and push
+    # Step 3: Score and push
     pushed = 0
     excluded = 0
     errors = 0
 
     for i, listing in enumerate(unique_listings):
-        print(f"\n[{i+1}/{len(unique_listings)}] Scoring: {listing['title']} at {listing['company']}")
+        print(f"\n[{i+1}/{len(unique_listings)}] {listing['title']} @ {listing['company']} ({listing['location']})")
         scored = score_job(
             title=listing["title"],
             description=listing["description"],
@@ -549,8 +919,13 @@ def run_agent():
         pushed += 1
 
     print("\n" + "=" * 60)
-    print(f"✅ Done! Pushed: {pushed} | Excluded: {excluded} | Errors: {errors}")
-    print(f"💰 Estimated API cost: ~${(pushed + excluded) * 0.001:.3f}")
+    print(f"✅ Done!")
+    print(f"   Fetched: {len(all_listings)} | NA filtered out: {location_rejected} | Duplicates skipped: {len(na_filtered) - len(unique_listings)}")
+    print(f"   Scored: {len(unique_listings)} | Pushed: {pushed} | Excluded: {excluded} | Errors: {errors}")
+    if not TEST_MODE:
+        print(f"💰 Estimated API cost: ~${(pushed + excluded) * 0.001:.3f}")
+    else:
+        print(f"💰 TEST MODE — $0 spent on Claude or SerpAPI")
 
 if __name__ == "__main__":
     run_agent()
