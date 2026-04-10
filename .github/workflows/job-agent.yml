@@ -2,7 +2,7 @@ name: Job Search Agent
 
 on:
   schedule:
-    - cron: '0 15 * * *'  # 7am Pacific Time (UTC-8) = 15:00 UTC
+    - cron: '0 21 * * *'  # 2pm Pacific Daylight Time (PDT = UTC-7)
   workflow_dispatch:        # manual trigger for testing
 
 jobs:
