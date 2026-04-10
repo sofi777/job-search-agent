@@ -138,13 +138,33 @@ NON_NA_SIGNALS = [
     "latin america", "apac", "emea", "europe", "asia",
 ]
 
+US_WORK_AUTH_SIGNALS = [
+    "must have a legal right to work in the united states",
+    "legal right to work in the us",
+    "authorized to work in the united states",
+    "authorized to work in the us",
+    "must be authorized to work in the us",
+    "work authorization in the united states",
+    "sponsorship will not be provided",
+    "we do not sponsor",
+    "unable to sponsor",
+    "cannot sponsor",
+    "no visa sponsorship",
+    "visa sponsorship is not available",
+    "sponsorship not available",
+    "must be a us citizen",
+    "us citizenship required",
+    "eligible to work in the us without sponsorship",
+    "without sponsorship",
+]
 US_CITIES = [
     "new york", "san francisco", "los angeles", "chicago", "boston",
     "austin", "seattle", "denver", "atlanta", "miami", "dallas",
     "portland", "philadelphia", "washington dc", "washington, dc",
     "minneapolis", "phoenix", "san diego", "nashville", "raleigh",
+    "princeton", "new jersey", "nj, usa", "ny, usa", "ca, usa",
 ]
-INOFFICE_SIGNALS = ["hybrid", "onsite", "on-site", "in office", "in-office"]
+INOFFICE_SIGNALS = ["hybrid", "onsite", "on-site", "in office", "in-office", "days per week on-site", "days on-site", "days/week on-site"]
 
 def is_workable_location(location: str) -> bool:
     """
@@ -162,6 +182,40 @@ def is_workable_location(location: str) -> bool:
     if "remote" not in loc:
         if any(city in loc for city in US_CITIES) and any(sig in loc for sig in INOFFICE_SIGNALS):
             return False
+    return True
+
+def is_workable_description(description: str, location: str) -> bool:
+    """
+    Catches two patterns buried in job description text:
+    1. Hybrid/in-office + US city combination
+    2. Explicit US work authorization requirements
+    """
+    if not description:
+        return True
+    desc = description.lower()
+    loc = location.lower() if location else ""
+
+    # Check 1: explicit US work authorization requirement — always reject
+    if any(sig in desc for sig in US_WORK_AUTH_SIGNALS):
+        return False
+
+    # If location confirmed BC or Canada — skip hybrid check
+    bc_signals = ["vancouver", "burnaby", "british columbia", " bc,", "victoria", "canada"]
+    if any(sig in loc for sig in bc_signals):
+        return True
+
+    # If location explicitly remote — skip hybrid check
+    if "remote" in loc:
+        return True
+
+    # Check 2: hybrid + US city in description
+    has_inoffice = any(sig in desc for sig in INOFFICE_SIGNALS)
+    has_us_city = any(city in desc for city in US_CITIES)
+    if has_inoffice and has_us_city:
+        if "fully remote" in desc or "100% remote" in desc or "remote-first" in desc:
+            return True
+        return False
+
     return True
 
 # ─────────────────────────────────────────────
@@ -343,13 +397,44 @@ def _serp_fetch(params, source_label):
         print(f"\n  ❌ {source_label} error: {e}")
         return []
 
-def _serp_job_to_listing(job, company_override=None, source="SerpAPI"):
+def _best_apply_url(job: dict) -> str:
+    """
+    Extract the best direct apply URL from a SerpAPI Google Jobs result.
+    Priority: company ATS (Lever/Greenhouse/Ashby) > Indeed > LinkedIn > any > share_link.
+    The share_link is a Google search URL, not a direct job link — never use it as primary.
+    """
+    apply_options = job.get("apply_options", [])
+    if not apply_options:
+        return job.get("share_link", "")
+
+    # Priority tiers — prefer direct company ATS links
+    tiers = [
+        # Tier 1: company ATS — direct, trackable, dedup-friendly
+        ["lever.co", "greenhouse.io", "ashbyhq.com", "workday.com",
+         "smartrecruiters.com", "jobvite.com", "icims.com", "taleo.net"],
+        # Tier 2: major job boards
+        ["indeed.com", "linkedin.com", "glassdoor.com", "ziprecruiter.com"],
+        # Tier 3: anything else
+        [],
+    ]
+    for tier in tiers:
+        for option in apply_options:
+            link = option.get("link", "")
+            if not tier:  # tier 3 — take first available
+                return link
+            if any(domain in link for domain in tier):
+                return link
+
+    return job.get("share_link", "")
+
+def _serp_job_to_listing(job, company_override=None, location_override=None, source="SerpAPI"):
     detected = job.get("detected_extensions", {})
+    url = _best_apply_url(job)
     return {
         "title": job.get("title", ""),
         "company": company_override or job.get("company_name", "Unknown"),
-        "url": job.get("share_link", ""),
-        "location": job.get("location", "Not specified"),
+        "url": url,
+        "location": location_override or job.get("location", "Not specified"),
         "salary": detected.get("salary", "Not specified"),
         "date_posted": detected.get("posted_at", "Unknown"),
         "source": source,
@@ -405,19 +490,6 @@ def fetch_serpapi_bc_gov():
                 for j in jobs]
     print(f"  Found {len(listings)} listings")
     return listings
-
-def _serp_job_to_listing(job, company_override=None, location_override=None, source="SerpAPI"):
-    detected = job.get("detected_extensions", {})
-    return {
-        "title": job.get("title", ""),
-        "company": company_override or job.get("company_name", "Unknown"),
-        "url": job.get("share_link", ""),
-        "location": location_override or job.get("location", "Not specified"),
-        "salary": detected.get("salary", "Not specified"),
-        "date_posted": detected.get("posted_at", "Unknown"),
-        "source": source,
-        "description": job.get("description", "")[:1500],
-    }
 
 # ─────────────────────────────────────────────
 # SOURCE 3: SERPAPI — GOVERNMENT OF CANADA
@@ -875,15 +947,20 @@ def run_agent():
 
     print(f"\n📊 Total raw listings fetched: {len(all_listings)}")
 
-    # Step 1: Location filter — reject non-NA and US in-office/hybrid
+    # Step 1: Location + description filter
     na_filtered = []
     location_rejected = 0
     for listing in all_listings:
-        if is_workable_location(listing.get("location", "")):
-            na_filtered.append(listing)
-        else:
-            print(f"  🌍 Rejected: {listing['title']} @ {listing['company']} — {listing['location']}")
+        loc = listing.get("location", "")
+        desc = listing.get("description", "")
+        if not is_workable_location(loc):
+            print(f"  🌍 Rejected (location): {listing['title']} @ {listing['company']} — {loc}")
             location_rejected += 1
+        elif not is_workable_description(desc, loc):
+            print(f"  🏢 Rejected (hybrid in description): {listing['title']} @ {listing['company']} — {loc}")
+            location_rejected += 1
+        else:
+            na_filtered.append(listing)
     print(f"📊 After location filter: {len(na_filtered)} kept, {location_rejected} rejected")
 
     # Step 2: Deduplicate
