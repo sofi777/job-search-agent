@@ -5,8 +5,8 @@ import feedparser
 from datetime import datetime, timezone
 from notion_client import Client
 import os
-# VERSION 5 — 2026-04-10
-# Fixes: US hybrid/in-office filter, Spring Health removed from Lever, notion-client pinned
+# VERSION 6 — 2026-04-10 — PRODUCTION
+# Changes: TEST_MODE off, cron 2pm PT, fromage=10 for first run
 
 # ─────────────────────────────────────────────
 # TEST MODE
@@ -14,7 +14,7 @@ import os
 # False = full production run
 # ─────────────────────────────────────────────
 
-TEST_MODE = True  # ← flip to False when ready for real run
+TEST_MODE = False  # ← set to True to test without spending API credits
 
 # ─────────────────────────────────────────────
 # PROFILE & SCORING CRITERIA
@@ -374,7 +374,7 @@ def fetch_serpapi_indeed():
         "location": "Canada",
         "gl": "ca",
         "hl": "en",
-        "chips": "date_posted:week",
+        "chips": "date_posted:month",  # ← first run: month covers 10+ days. Change to "date_posted:today" after first run
         "api_key": SERP_API_KEY,
     }, "SerpAPI Indeed Canada")
     listings = [_serp_job_to_listing(j, source="SerpAPI / Indeed Canada") for j in jobs]
