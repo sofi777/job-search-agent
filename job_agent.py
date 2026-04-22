@@ -6,8 +6,8 @@ import urllib.parse
 from datetime import datetime, timezone
 from notion_client import Client
 import os
-# VERSION 12 — 2026-04-10 — PRODUCTION
-# Changes: Canada-wide ATS search (no hardcoded companies), alternating gov queries, US fully excluded
+# VERSION 13 — 2026-04-14 — PRODUCTION
+# Changes: LinkedIn SerpAPI added, fully Canada-only (no US at all), profile + scoring updated
 
 # ─────────────────────────────────────────────
 # TEST MODE
@@ -38,7 +38,9 @@ stakeholder management, cross-functional leadership, data-driven decisions, cons
 
 Target roles: Senior PM, Lead PM, Group PM, Director of Product, VP of Product
 Minimum salary: CAD $120,000 (no ceiling)
-Location: Remote Canada, remote US (if open to Canadian applicants), or hybrid/in-office in BC
+Location: Canada only — remote anywhere in Canada, or hybrid/in-office in Vancouver metro area
+          (Vancouver, Burnaby, Surrey, Richmond, North Vancouver, West Vancouver, Coquitlam,
+           Port Moody, New Westminster, Langley, Maple Ridge)
 
 Industry preferences (for scoring):
 - TOP TIER: Healthtech, wellness, longevity, senior care
@@ -77,19 +79,18 @@ Score this job listing for Sofia on a scale of 1-10 using these weighted criteri
    - Ability to influence end-to-end user journey → high score
 
 HARD EXCLUSIONS — return score 0 and action "exclude" ONLY if one of these is clearly and explicitly true:
-- Explicitly requires relocation (not just "office available")
+- Explicitly requires relocation outside Canada
 - Explicitly states US citizenship required, US work permit required, US work visa required, or security clearance required
 - Title is clearly below Senior PM level (e.g. "Product Manager", "Associate PM", "Junior PM") — NOT government equivalents
 - Salary is explicitly stated in the job posting AND is below CAD $120,000
-- US-based role that is explicitly NOT remote (e.g. "onsite only", "must work from our NYC office")
+- Role is based in the US (any US city or state), even if remote — Sofia is Canada-only
 - Canadian role outside BC that is explicitly NOT remote (e.g. in-office only in Toronto, Ottawa, Montreal, Calgary)
 
 KEEP — do NOT exclude these:
 - Remote anywhere in Canada
-- Remote US (open to or not excluding Canadian applicants)
 - In-office or hybrid in Vancouver metro: Vancouver, Burnaby, Port Moody, Surrey, Richmond,
   North Vancouver, West Vancouver, Coquitlam, New Westminster, Langley, Maple Ridge
-- Any role where location or remote policy is unclear — score it and flag in red_flags instead
+- Any role where location is unclear — score it and flag in red_flags instead
 - Government roles with equivalent titles (Director of Digital Services, Service Design Lead, etc.)
 
 DO NOT exclude based on:
@@ -123,9 +124,7 @@ NA_SIGNALS = [
     "victoria", "surrey", "richmond", "coquitlam", "north vancouver",
     "west vancouver", "port moody", "new westminster", "langley", "maple ridge",
     "ontario", "toronto", "alberta", "calgary", "quebec", "montreal",
-    "united states", "usa", "us", "new york", "san francisco", "seattle",
-    "california", "texas", "remote", "north america", "anywhere",
-    "not specified", "not disclosed",
+    "remote", "anywhere", "not specified", "not disclosed",
 ]
 
 NON_NA_SIGNALS = [
@@ -194,30 +193,25 @@ CANADA_SIGNALS = [
     "remote", "not specified", "anywhere",
 ]
 
-def is_workable_location(location: str, canada_only: bool = False) -> bool:
+def is_workable_location(location: str, canada_only: bool = True) -> bool:
     """
-    Always rejects: non-North-America locations (Europe, Asia, etc.)
-    canada_only=False (default): also allows US remote roles
-    canada_only=True: rejects ALL US locations — Canada and remote only
-                      Use for all sources except RemoteOK
+    Rejects: non-NA locations (Europe, Asia etc.) and any US location.
+    Keeps: Canada, remote (unspecified), Vancouver metro, unknown.
+    canada_only=True (default, all sources): reject all US locations.
+    canada_only=False (RemoteOK only): allow US location strings since
+      RemoteOK jobs are globally remote — visa check handled by description filter.
     """
     if not location or location.strip() == "":
         return True  # unknown — pass to Claude
     loc = location.lower()
 
-    # Always reject non-NA
+    # Always reject non-NA (Europe, Asia, etc.)
     if any(signal in loc for signal in NON_NA_SIGNALS):
         return False
 
-    # Canada-only mode: reject anything that looks US-based
+    # Reject any US location (canada_only mode — all sources except RemoteOK)
     if canada_only:
         if any(signal in loc for signal in US_LOCATION_SIGNALS):
-            return False
-        return True  # not non-NA, not US → keep
-
-    # Standard mode (RemoteOK): reject US hybrid/in-office only
-    if "remote" not in loc:
-        if any(city in loc for city in US_CITIES) and any(sig in loc for sig in INOFFICE_SIGNALS):
             return False
 
     return True
@@ -570,6 +564,36 @@ def fetch_serpapi_indeed():
     return listings
 
 # ─────────────────────────────────────────────
+# SOURCE 1b: SERPAPI — LINKEDIN CANADA (daily, experimental)
+# Uses Google Jobs + site:linkedin.com — may return 0-3 results
+# Real LinkedIn links allow network/referral lookup
+# ─────────────────────────────────────────────
+
+def fetch_serpapi_linkedin_canada():
+    print("\n📡 Fetching LinkedIn Canada via SerpAPI (experimental)...")
+    if TEST_MODE:
+        print("  🧪 TEST MODE — skipping")
+        return []
+    if not SERP_API_KEY:
+        print("  ⚠️  SERP_API secret not set — skipping")
+        return []
+    jobs = _serp_fetch({
+        "engine": "google_jobs",
+        "q": f"{SERP_PM_QUERY} site:linkedin.com/jobs",
+        "location": "Canada",
+        "gl": "ca",
+        "hl": "en",
+        "chips": "date_posted:today",
+        "api_key": SERP_API_KEY,
+    }, "SerpAPI LinkedIn Canada")
+    listings = [
+        _serp_job_to_listing(j, source="SerpAPI / LinkedIn Canada")
+        for j in jobs if not _is_low_quality_source(j)
+    ]
+    print(f"  Found {len(listings)} listings")
+    return listings
+
+# ─────────────────────────────────────────────
 # SOURCE 2: SERPAPI — LEVER CANADA-WIDE (daily)
 # Searches ALL Canadian companies on Lever
 # ─────────────────────────────────────────────
@@ -904,8 +928,9 @@ def run_agent():
     print(f"  Found {len(existing_urls)} existing entries in Notion")
 
     all_listings = []
-    # Daily sources (4 SerpAPI calls)
+    # Daily sources (5 SerpAPI calls including LinkedIn experiment)
     all_listings += fetch_serpapi_indeed()
+    all_listings += fetch_serpapi_linkedin_canada()
     all_listings += fetch_serpapi_lever_canada()
     all_listings += fetch_serpapi_greenhouse_canada()
     all_listings += fetch_serpapi_ashby_canada()
