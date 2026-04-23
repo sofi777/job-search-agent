@@ -6,8 +6,8 @@ import urllib.parse
 from datetime import datetime, timezone
 from notion_client import Client
 import os
-# VERSION 13 — 2026-04-14 — PRODUCTION
-# Changes: LinkedIn SerpAPI added, fully Canada-only (no US at all), profile + scoring updated
+# VERSION 14 — 2026-04-23 — PRODUCTION
+# Changes: Healthtech company watchlist added (Lever/Greenhouse/Ashby/Workable/SerpAPI)
 
 # ─────────────────────────────────────────────
 # TEST MODE
@@ -837,6 +837,338 @@ def fetch_remoteok():
     return listings
 
 # ─────────────────────────────────────────────
+# HEALTHTECH COMPANY LISTS
+# Source: verified CSV watchlist (72 strict + 142 extended)
+# Strategy per ATS type:
+#   Lever/Greenhouse/Ashby/Workable → direct API (reliable, no quota)
+#   SerpAPI healthtech query → covers the 80+ manual-discovery companies
+# All results pass through canada_only location filter + description checks
+# ─────────────────────────────────────────────
+
+# ── Shared keyword filters ──────────────────
+HT_PM_KW = [
+    "product manager", "product lead", "head of product",
+    "director of product", "vp of product", "vp product",
+    "product owner", "group product manager",
+]
+HT_SENIOR_KW = [
+    "senior", "lead", "group", "director", "vp", "principal",
+    "head of", "staff",
+]
+HT_CANADA_KW = [
+    "canada", "remote canada", "remote - canada", "canada remote",
+    "vancouver", "burnaby", "bc,", "british columbia",
+    "toronto", "ontario", "montreal", "quebec", "calgary",
+    "alberta", "ottawa", "mississauga", "remote",
+]
+
+def _ht_canada_location(location: str) -> bool:
+    """True if location string contains a Canada signal or is unspecified."""
+    if not location or location.strip() in ("", "Not specified"):
+        return True  # unknown — keep, let main filter decide
+    loc = location.lower()
+    # Reject explicit US locations
+    if any(sig in loc for sig in US_LOCATION_SIGNALS):
+        return False
+    return True
+
+def _ht_listing(title, company, url, location, description, date_posted, source, linkedin_url=""):
+    """Build a standardised listing dict for healthtech direct-API sources."""
+    return {
+        "title": title,
+        "company": company,
+        "url": url,
+        "linkedin_url": linkedin_url or _make_linkedin_search_url(title, company),
+        "location": location,
+        "salary": "Not specified",
+        "date_posted": date_posted,
+        "source": source,
+        "description": description[:1500],
+        "_canada_only": True,
+    }
+
+# ─────────────────────────────────────────────
+# SOURCE HT-1: LEVER — HEALTHTECH COMPANIES
+# PointClickCare (already primary), Fullscript, Smile Digital Health,
+# DNA Genotek — all verified High confidence, Canadian/remote-Canada roles
+# ─────────────────────────────────────────────
+
+HEALTHTECH_LEVER_COMPANIES = [
+    ("pointclickcare",   "PointClickCare"),       # Senior care SaaS — Canada HQ
+    ("smiledigitalhealth", "Smile Digital Health"), # FHIR health data — Canada
+    ("fullscript",       "Fullscript"),            # Integrative care — Canada/remote
+    ("dnagenotek",       "DNA Genotek"),           # Diagnostics — Ottawa/remote Canada
+]
+
+def fetch_healthtech_lever():
+    print("\n📡 Fetching Healthtech — Lever companies...")
+    listings = []
+    headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
+    for slug, company_name in HEALTHTECH_LEVER_COMPANIES:
+        try:
+            url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
+            response = requests.get(url, headers=headers, timeout=20)
+            print(f"  {company_name}: HTTP {response.status_code}", end="")
+            if response.status_code != 200:
+                print()
+                continue
+            jobs = response.json()
+            matched = 0
+            for job in jobs:
+                title = job.get("text", "").lower()
+                if not any(kw in title for kw in HT_PM_KW):
+                    continue
+                if not any(kw in title for kw in HT_SENIOR_KW):
+                    continue
+                location = job.get("categories", {}).get("location", "Not specified")
+                if not _ht_canada_location(location):
+                    continue
+                matched += 1
+                job_title = job.get("text", "")
+                listings.append(_ht_listing(
+                    title=job_title,
+                    company=company_name,
+                    url=job.get("hostedUrl", ""),
+                    location=location,
+                    description=job.get("descriptionPlain", ""),
+                    date_posted=datetime.fromtimestamp(
+                        job.get("createdAt", 0) / 1000, tz=timezone.utc
+                    ).strftime("%Y-%m-%d") if job.get("createdAt") else "Unknown",
+                    source=f"Lever / {company_name}",
+                ))
+            print(f" → {len(jobs)} total, {matched} matched")
+        except Exception as e:
+            print(f"\n  ❌ {company_name} Lever error: {e}")
+    print(f"  Total from Healthtech Lever: {len(listings)}")
+    return listings
+
+# ─────────────────────────────────────────────
+# SOURCE HT-2: GREENHOUSE — HEALTHTECH COMPANIES
+# Practice Better — Canadian wellness SaaS, remote Canada verified
+# ─────────────────────────────────────────────
+
+HEALTHTECH_GREENHOUSE_COMPANIES = [
+    ("alayacare",             "AlayaCare"),          # Home care software — Canada
+    ("practicebetter",        "Practice Better"),    # Wellness SaaS — remote Canada
+    ("dialoguehealthtechnologiesinc", "Dialogue"),   # Virtual care — Canada
+    ("prenuvo",               "Prenuvo"),            # MRI diagnostics — Vancouver BC
+]
+
+def fetch_healthtech_greenhouse():
+    print("\n📡 Fetching Healthtech — Greenhouse companies...")
+    listings = []
+    headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
+    for slug, company_name in HEALTHTECH_GREENHOUSE_COMPANIES:
+        for endpoint in [
+            f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true",
+            f"https://job-boards.greenhouse.io/api/v1/boards/{slug}/jobs?content=true",
+        ]:
+            try:
+                response = requests.get(endpoint, headers=headers, timeout=20)
+                print(f"  {company_name}: HTTP {response.status_code}", end="")
+                if response.status_code != 200:
+                    print(" (trying alt...)", end="")
+                    continue
+                jobs = response.json().get("jobs", [])
+                matched = 0
+                for job in jobs:
+                    title = job.get("title", "").lower()
+                    if not any(kw in title for kw in HT_PM_KW):
+                        continue
+                    if not any(kw in title for kw in HT_SENIOR_KW):
+                        continue
+                    location = job.get("location", {}).get("name", "Not specified")
+                    if not _ht_canada_location(location):
+                        continue
+                    matched += 1
+                    job_title = job.get("title", "")
+                    listings.append(_ht_listing(
+                        title=job_title,
+                        company=company_name,
+                        url=job.get("absolute_url", ""),
+                        location=location,
+                        description=job.get("content", ""),
+                        date_posted=job.get("updated_at", "Unknown")[:10],
+                        source=f"Greenhouse / {company_name}",
+                    ))
+                print(f" → {len(jobs)} total, {matched} matched")
+                break  # success — don't try alt endpoint
+            except Exception as e:
+                print(f"\n  ❌ {company_name} Greenhouse error: {e}")
+                break
+    print(f"  Total from Healthtech Greenhouse: {len(listings)}")
+    return listings
+
+# ─────────────────────────────────────────────
+# SOURCE HT-3: ASHBY — HEALTHTECH COMPANIES
+# Felix Health — Canadian telehealth, remote Canada
+# Maximus — men's health, remote Canada benefits confirmed
+# ─────────────────────────────────────────────
+
+HEALTHTECH_ASHBY_COMPANIES = [
+    ("felix",        "Felix Health"),  # Digital health — Toronto/remote Canada
+    ("maximustribe", "Maximus"),       # Men's health — remote Canada benefits
+]
+
+def fetch_healthtech_ashby():
+    print("\n📡 Fetching Healthtech — Ashby companies...")
+    listings = []
+    headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
+    for slug, company_name in HEALTHTECH_ASHBY_COMPANIES:
+        try:
+            url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
+            response = requests.get(url, headers=headers, timeout=20)
+            print(f"  {company_name}: HTTP {response.status_code}", end="")
+            if response.status_code != 200:
+                print()
+                continue
+            jobs = response.json().get("jobPostings", [])
+            matched = 0
+            for job in jobs:
+                title = job.get("title", "").lower()
+                if not any(kw in title for kw in HT_PM_KW):
+                    continue
+                if not any(kw in title for kw in HT_SENIOR_KW):
+                    continue
+                location = job.get("location", "Not specified")
+                if isinstance(location, dict):
+                    location = location.get("name", "Not specified")
+                if not _ht_canada_location(location):
+                    continue
+                matched += 1
+                job_title = job.get("title", "")
+                listings.append(_ht_listing(
+                    title=job_title,
+                    company=company_name,
+                    url=job.get("jobUrl", ""),
+                    location=location,
+                    description=job.get("descriptionPlain", job.get("description", "")),
+                    date_posted=job.get("publishedDate", "Unknown")[:10] if job.get("publishedDate") else "Unknown",
+                    source=f"Ashby / {company_name}",
+                ))
+            print(f" → {len(jobs)} total, {matched} matched")
+        except Exception as e:
+            print(f"\n  ❌ {company_name} Ashby error: {e}")
+    print(f"  Total from Healthtech Ashby: {len(listings)}")
+    return listings
+
+# ─────────────────────────────────────────────
+# SOURCE HT-4: WORKABLE — HEALTHTECH COMPANIES
+# New ATS type. AssistIQ and MealSuite both verified.
+# Endpoint: apply.workable.com/api/v1/widget/accounts/{slug}
+# ─────────────────────────────────────────────
+
+HEALTHTECH_WORKABLE_COMPANIES = [
+    ("assistiq",  "AssistIQ"),   # Hospital supply chain AI — Toronto/remote Canada
+    ("mealsuite", "MealSuite"),  # Senior living nutrition SaaS — Canada
+]
+
+def fetch_healthtech_workable():
+    print("\n📡 Fetching Healthtech — Workable companies...")
+    listings = []
+    headers = {"User-Agent": "Mozilla/5.0 job-search-agent/1.0"}
+    for slug, company_name in HEALTHTECH_WORKABLE_COMPANIES:
+        try:
+            url = f"https://apply.workable.com/api/v1/widget/accounts/{slug}"
+            response = requests.get(url, headers=headers, timeout=20)
+            print(f"  {company_name}: HTTP {response.status_code}", end="")
+            if response.status_code != 200:
+                print()
+                continue
+            jobs = response.json().get("jobs", [])
+            matched = 0
+            for job in jobs:
+                title = job.get("title", "").lower()
+                if not any(kw in title for kw in HT_PM_KW):
+                    continue
+                if not any(kw in title for kw in HT_SENIOR_KW):
+                    continue
+                # Workable location format: {"country": "CA", "city": "Toronto"}
+                loc_obj = job.get("location", {})
+                country = loc_obj.get("country", "")
+                city = loc_obj.get("city", "")
+                remote = job.get("remote", False)
+                if country and country not in ("CA", ""):
+                    continue  # not Canada
+                location = f"{city}, Canada" if city else ("Remote Canada" if remote else "Canada")
+                matched += 1
+                job_title = job.get("title", "")
+                job_url = f"https://apply.workable.com/{slug}/j/{job.get('shortcode', '')}"
+                listings.append(_ht_listing(
+                    title=job_title,
+                    company=company_name,
+                    url=job_url,
+                    location=location,
+                    description=job.get("description", ""),
+                    date_posted=job.get("published_on", "Unknown")[:10] if job.get("published_on") else "Unknown",
+                    source=f"Workable / {company_name}",
+                ))
+            print(f" → {len(jobs)} total, {matched} matched")
+        except Exception as e:
+            print(f"\n  ❌ {company_name} Workable error: {e}")
+    print(f"  Total from Healthtech Workable: {len(listings)}")
+    return listings
+
+# ─────────────────────────────────────────────
+# SOURCE HT-5: SERPAPI — HEALTHTECH CANADA (every other day)
+# Covers the 80+ companies where ATS is unknown.
+# Searches by company name for PM roles in Canada.
+# Runs on odd days to alternate with gov queries.
+# ─────────────────────────────────────────────
+
+# High-confidence companies without known ATS slugs
+# Split into 2 batches to keep query length manageable
+HEALTHTECH_SERP_BATCH_1 = (
+    '"Jane App" OR "AlayaCare" OR "Dialogue" OR "WELL Health" OR '
+    '"PocketHealth" OR "SeamlessMD" OR "MedMe Health" OR "Verto Health" OR '
+    '"Tali AI" OR "HEALWELL AI" OR "WellnessLiving" OR "Practice Better" OR '
+    '"LifeSpeak" OR "BenchSci" OR "PocketPills" OR "Harris Computer"'
+)
+
+HEALTHTECH_SERP_BATCH_2 = (
+    '"Felix Health" OR "Fullscript" OR "PointClickCare" OR "Smile Digital Health" OR '
+    '"PurposeMed" OR "Maple" OR "CloudMD" OR "Acuity Insights" OR '
+    '"Greenspace Health" OR "QoC Health" OR "Avocette" OR "Calian" OR '
+    '"Loblaw Digital" OR "Manulife" OR "Sun Life" OR "DNA Genotek"'
+)
+
+def is_healthtech_serp_day() -> bool:
+    """Run healthtech SerpAPI on odd days, gov queries on even days."""
+    return datetime.now().day % 2 == 1
+
+def fetch_serpapi_healthtech_canada():
+    """Fetch healthtech company PM jobs via SerpAPI — covers companies without known ATS."""
+    print("\n📡 Fetching Healthtech Canada via SerpAPI (name-based)...")
+    if TEST_MODE:
+        print("  🧪 TEST MODE — skipping")
+        return []
+    if not is_healthtech_serp_day():
+        print("  ⏭️  Skipping today (runs on odd days)")
+        return []
+    if not SERP_API_KEY:
+        print("  ⚠️  SERP_API secret not set — skipping")
+        return []
+
+    all_listings = []
+    for i, batch in enumerate([HEALTHTECH_SERP_BATCH_1, HEALTHTECH_SERP_BATCH_2], 1):
+        jobs = _serp_fetch({
+            "engine": "google_jobs",
+            "q": f'({SERP_PM_QUERY}) ({batch})',
+            "location": "Canada",
+            "gl": "ca", "hl": "en",
+            "chips": "date_posted:month",
+            "api_key": SERP_API_KEY,
+        }, f"SerpAPI Healthtech Canada batch {i}")
+        listings = [
+            _serp_job_to_listing(j, source="SerpAPI / Healthtech Canada")
+            for j in jobs if not _is_low_quality_source(j)
+        ]
+        all_listings += listings
+
+    print(f"  Total from Healthtech SerpAPI: {len(all_listings)}")
+    return all_listings
+
+# ─────────────────────────────────────────────
 # SOURCE 10: BC TECH ASSOCIATION
 # ─────────────────────────────────────────────
 
@@ -934,11 +1266,17 @@ def run_agent():
     all_listings += fetch_serpapi_lever_canada()
     all_listings += fetch_serpapi_greenhouse_canada()
     all_listings += fetch_serpapi_ashby_canada()
-    # Every-other-day sources (3 SerpAPI calls on even days)
+    # Every-other-day: gov queries on even days, healthtech SerpAPI on odd days
     all_listings += fetch_serpapi_bc_gov()
     all_listings += fetch_serpapi_gc_jobs()
     all_listings += fetch_serpapi_health_authorities()
-    # Free sources (no SerpAPI quota used)
+    all_listings += fetch_serpapi_healthtech_canada()
+    # Free direct ATS — healthtech companies (no quota)
+    all_listings += fetch_healthtech_lever()
+    all_listings += fetch_healthtech_greenhouse()
+    all_listings += fetch_healthtech_ashby()
+    all_listings += fetch_healthtech_workable()
+    # Free RSS sources
     all_listings += fetch_remoteok()
     all_listings += fetch_bc_tech()
     all_listings += fetch_wellfound()
