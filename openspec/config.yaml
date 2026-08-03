@@ -1,0 +1,26 @@
+schema: spec-driven
+
+context: |
+  Python script (job_agent.py) that fetches job listings from multiple sources
+  (SerpAPI/Google Jobs, direct ATS APIs — Lever/Greenhouse/Ashby/Workable, RSS),
+  filters by location/quality, scores fit against the user's preferences via
+  Claude, and pushes matches to a Notion database. Previously scheduled via
+  GitHub Actions (daily cron) — currently disabled (out of Actions quota).
+  Known gap: Indeed/LinkedIn coverage via SerpAPI's google_jobs engine is shallow
+  (single query, date:today, no pagination). In-progress direction: replace/augment
+  with Gmail-based ingestion of the user's native LinkedIn job alert emails, then
+  fetch full descriptions directly from linkedin.com/jobs/view/... URLs (confirmed
+  publicly fetchable without login) before scoring.
+
+rules:
+  code:
+    - Keep implementations short and simple by default — no database, no extra tools/dependencies, unless the requirement genuinely needs them
+  proposal:
+    - Keep concise — no filler paragraphs; just Why / What Changes / Capabilities / Impact
+  design:
+    - State each decision with a one-line reason; skip alternatives-considered essays unless the choice is genuinely contested
+    - Omit sections that don't apply (e.g. skip Migration Plan for greenfield changes)
+  specs:
+    - One scenario per requirement unless a second scenario tests genuinely different behavior
+  tasks:
+    - Numbered checklist grouped by implementation phase, ordered by dependency

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Flask
+instance/
+.flaskenv
+
+# Uploaded resumes (user data, not sample data)
+data/uploads/*
+!data/uploads/.gitkeep
+
+# SQLite database (user + progress state, not sample data)
+data/app.db
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

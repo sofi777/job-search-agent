@@ -1,0 +1,12 @@
+<div class="nav">
+  <div class="brand">Dream Job Landing</div>
+  <div style="flex:1;"></div>
+  <a href="{{ url_for('priority') }}" class="btn btn-ghost btn-small">Edit ranking</a>
+  <form method="post" action="{{ url_for('onboarding_restart') }}" style="display:inline;">
+    <button type="submit" class="btn btn-ghost btn-small">Restart onboarding</button>
+  </form>
+  <form method="post" action="{{ url_for('logout') }}" style="display:inline;">
+    <button type="submit" class="btn btn-ghost btn-small">Log out</button>
+  </form>
+  <div class="avatar">{{ user.initials }}</div>
+</div>

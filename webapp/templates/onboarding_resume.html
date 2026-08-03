@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Upload resume — Dream Job Landing{% endblock %}
+{% block body %}
+<div class="center-screen">
+  <div class="page-narrow">
+    {% include "_wizard_header.html" %}
+    <h1>Let's find your next role.</h1>
+    <p class="text-muted" style="margin-bottom:var(--space-6);">Upload your resume and I'll scan LinkedIn, Indeed, company sites and niche boards for roles that actually fit.</p>
+
+    {% if error %}
+    <p style="color:var(--color-accent);font-size:13px;margin-bottom:var(--space-3);">{{ error }}</p>
+    {% endif %}
+
+    <form method="post" enctype="multipart/form-data">
+      <div class="dropzone {{ 'filled' if profile.resume_filename else '' }}">
+        <div style="font-family:var(--font-heading);font-weight:800;">
+          {{ profile.resume_filename or 'Choose your resume' }}
+        </div>
+        <div class="text-muted">PDF or DOCX, up to 10MB{{ ' — already on file, re-upload to replace it' if profile.resume_filename else '' }}</div>
+        <input type="file" name="resume" accept=".pdf,.doc,.docx" {{ 'required' if not profile.resume_filename else '' }} style="margin-top:8px;">
+      </div>
+      <div class="wizard-actions end">
+        <button type="submit" class="btn btn-primary">Continue</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

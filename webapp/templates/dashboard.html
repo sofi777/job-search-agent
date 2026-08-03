@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Dream Job Landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<div class="container">
+  <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:var(--space-3);margin-bottom:var(--space-4);">
+    <div>
+      <h1>{{ job_count }} roles matched</h1>
+      <div class="text-muted">
+        {{ '%d new since your last visit' % new_count if new_count else 'All caught up' }} &middot; Last scanned {{ last_scan }}
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <form method="post" action="{{ url_for('reload_data') }}">
+        <button type="submit" class="btn btn-secondary" title="Re-read data/jobs.json from disk">Reload sample data</button>
+      </form>
+      <form method="post" action="{{ url_for('scan') }}">
+        <button type="submit" class="btn btn-secondary">Run scan now</button>
+      </form>
+    </div>
+  </div>
+
+  <form method="get" class="toolbar">
+    <input type="hidden" name="sort" value="{{ sort_key }}">
+    <input type="hidden" name="dir" value="{{ sort_dir }}">
+    <input type="hidden" name="status" value="{{ status_filter }}">
+    <div class="search-field">
+      <input class="input" name="q" value="{{ query }}" placeholder="Search company or title" onchange="this.form.submit()">
+    </div>
+  </form>
+  <div class="toolbar">
+    {% for key, label in [('all','All'), ('new','New'), ('viewed','Viewed'), ('applied','Applied')] %}
+    <a href="{{ url_for('dashboard', sort=sort_key, dir=sort_dir, status=key, q=query) }}"
+       class="btn btn-small {{ 'btn-secondary active' if status_filter == key else 'btn-secondary' }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+
+  <div class="table-wrap">
+    <table class="table" style="min-width:960px;">
+      <thead>
+        <tr>
+          {% for key, label in [('company','Employer'), ('title','Role'), ('posted','Posted'), ('match','Match'), ('status','Status')] %}
+          <th>
+            <a href="{{ url_for('dashboard', sort=key, dir=('asc' if sort_key == key and sort_dir == 'desc' else 'desc'), status=status_filter, q=query) }}">
+              {{ label }}{% if sort_key == key %}{{ ' ▲' if sort_dir == 'asc' else ' ▼' }}{% endif %}
+            </a>
+          </th>
+          {% endfor %}
+          <th>Notes</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td>
+            <div style="font-weight:600;">{{ job.company }}</div>
+            <div class="text-muted" style="font-size:11px;">{{ job.source }} &middot; {{ job.location }}</div>
+          </td>
+          <td>
+            <a href="{{ url_for('job_detail', job_id=job.id) }}" style="color:var(--color-text);font-weight:600;text-decoration:none;">{{ job.title }}</a>
+            <div class="text-muted" style="font-size:11px;">{{ job.currency }} {{ '{:,}'.format(job.salary_min) }}&ndash;{{ '{:,}'.format(job.salary_max) }}</div>
+          </td>
+          <td style="white-space:nowrap;">{{ job.posted }}</td>
+          <td style="white-space:nowrap;">
+            <span class="tag {{ 'tag-outline' if job.get('match', 0) >= 85 else 'tag-neutral' }}">{{ job.get('match', 0) }}% match</span>
+          </td>
+          <td>
+            <form method="post" action="{{ url_for('job_status', job_id=job.id) }}">
+              <select name="status" class="input tag {{ 'tag-accent' if job.status == 'new' else 'tag-neutral' }}" style="width:auto;min-height:28px;padding:3px 8px;border:none;" onchange="this.form.submit()">
+                {% for s in ['new', 'viewed', 'applied'] %}
+                <option value="{{ s }}" {{ 'selected' if job.status == s else '' }}>{{ s|capitalize }}</option>
+                {% endfor %}
+              </select>
+            </form>
+          </td>
+          <td style="min-width:160px;">
+            <form method="post" action="{{ url_for('job_comment', job_id=job.id) }}">
+              <input class="input" name="comments" value="{{ job.comments }}" placeholder="Add a note..." onchange="this.form.submit()">
+            </form>
+          </td>
+          <td style="white-space:nowrap;">
+            <div style="display:flex;gap:6px;">
+              <a href="{{ url_for('job_document', job_id=job.id, doc_type='cover-letter') }}" class="btn btn-secondary btn-small" title="Generate cover letter">Letter</a>
+              <a href="{{ url_for('job_document', job_id=job.id, doc_type='resume') }}" class="btn btn-secondary btn-small" title="Generate tailored resume">Resume</a>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not jobs %}
+    <div style="padding:var(--space-8);text-align:center;color:var(--color-neutral-700);">No roles match these filters.</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

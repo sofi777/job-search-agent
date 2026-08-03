@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Salary — Dream Job Landing{% endblock %}
+{% block body %}
+<div class="center-screen">
+  <div class="page-narrow">
+    {% include "_wizard_header.html" %}
+    <h2>One more thing.</h2>
+    <p class="text-muted" style="margin-bottom:var(--space-4);">What's the least you'd accept? I'll filter out anything below this.</p>
+
+    <form method="post">
+      <div style="display:flex;gap:10px;">
+        <div class="field" style="flex:1;">
+          <label for="min_salary">Minimum salary</label>
+          <input class="input" id="min_salary" name="min_salary" type="number" step="5000" value="{{ profile.min_salary }}">
+        </div>
+        <div class="field" style="width:120px;">
+          <label for="currency">Currency</label>
+          <select class="input" id="currency" name="currency">
+            {% for c in currency_options %}
+            <option value="{{ c }}" {{ 'selected' if c == profile.currency else '' }}>{{ c }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="wizard-actions">
+        <a href="{{ url_for('onboarding', step='preferences') }}" class="btn btn-ghost">&larr; Back</a>
+        <button type="submit" class="btn btn-primary">Find my roles</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

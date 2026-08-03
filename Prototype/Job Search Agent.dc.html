@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/modernist-022e0c3f-3aea-47a1-a54b-a692c8544309/styles.css">
+  <script src="_ds/modernist-022e0c3f-3aea-47a1-a54b-a692c8544309/_ds_bundle.js"></script>
+  <style>
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  </style>
+</helmet>
+<div style="min-height:100vh;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);font-size:15px;line-height:1.5;">
+
+  <sc-if value="{{ isOnboarding }}" hint-placeholder-val="{{ true }}">
+  <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:var(--space-6) var(--space-4);">
+    <div style="width:100%;max-width:640px;">
+      <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-6);">
+        <div style="font-family:var(--font-heading);font-weight:800;font-size:18px;">Sherpa</div>
+        <div style="flex:1;height:2px;background:var(--color-divider);"></div>
+        <div style="font-size:12px;color:var(--color-neutral-700);">Step {{ stepNumber }} of 6</div>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:var(--space-8);">
+        <sc-for list="{{ progressDots }}" as="dot" hint-placeholder-count="6">
+          <div style="height:4px;flex:1;background:{{ dot.color }};"></div>
+        </sc-for>
+      </div>
+
+      <sc-if value="{{ step0 }}">
+      <div>
+        <h1 style="font-family:var(--font-heading);font-weight:800;font-size:34px;margin:0 0 8px;letter-spacing:-0.02em;">Let's find your next role.</h1>
+        <p style="font-size:15px;color:var(--color-neutral-700);margin:0 0 var(--space-6);max-width:480px;">Upload your resume and I'll scan LinkedIn, Indeed, company sites and niche boards for roles that actually fit — then help you apply with a genuine voice, not AI boilerplate.</p>
+        <div onClick="{{ handleUploadClick }}" style="{{ dropzoneStyle }}">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="{{ dropzoneIconColor }}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"></path><path d="M7 8l5-5 5 5"></path><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"></path></svg>
+          <div style="font-family:var(--font-heading);font-weight:800;font-size:15px;">{{ dropzoneTitle }}</div>
+          <div style="font-size:13px;color:var(--color-neutral-700);">{{ dropzoneSubtitle }}</div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:var(--space-6);">
+          <button onClick="{{ goNext }}" disabled="{{ nextDisabled }}" class="{{ nextButtonStyle }}">Continue<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"></path></svg></button>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ step1 }}">
+      <div>
+        <h2 style="font-family:var(--font-heading);font-weight:800;font-size:26px;margin:0 0 6px;">Here's what I'd apply you to.</h2>
+        <p style="font-size:14px;color:var(--color-neutral-700);margin:0 0 var(--space-4);">Based on your resume. Remove anything off-base, or add a title of your own.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-4);">
+          <sc-for list="{{ roleChips }}" as="chip" hint-placeholder-count="3">
+            <div style="display:inline-flex;align-items:center;gap:8px;background:var(--color-surface);border:1px solid var(--color-divider);padding:8px 10px 8px 14px;font-size:14px;">
+              {{ chip.name }}
+              <button onClick="{{ chip.onRemove }}" style="all:unset;cursor:pointer;display:flex;color:var(--color-neutral-700);">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg>
+              </button>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <input class="input" placeholder="Add another role, e.g. Director of Product" value="{{ newRole }}" onChange="{{ setNewRole }}" onKeyDown="{{ addRoleOnEnter }}"></input>
+          <button onClick="{{ addRole }}" class="{{ secondaryBtnStyle }}">Add</button>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:var(--space-6);">
+          <button onClick="{{ goBack }}" class="{{ ghostBtnStyle }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg>Back</button>
+          <button onClick="{{ goNext }}" class="{{ primaryBtnStyle }}">Continue<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"></path></svg></button>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ step2 }}">
+      <div>
+        <h2 style="font-family:var(--font-heading);font-weight:800;font-size:26px;margin:0 0 6px;">Where can you work?</h2>
+        <p style="font-size:14px;color:var(--color-neutral-700);margin:0 0 var(--space-4);">I'll prioritize roles within commute range, plus anywhere remote is allowed.</p>
+        <div style="margin-bottom:var(--space-4);">
+          <label style="display:block;font-size:12px;margin-bottom:5px;color:var(--color-neutral-700);">Home base</label>
+          <input class="input" value="{{ homeAddress }}" onChange="{{ setHomeAddress }}"></input>
+        </div>
+        <div style="margin-bottom:var(--space-4);">
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--color-neutral-700);margin-bottom:5px;"><span>Commute radius</span><span style="color:var(--color-text);font-weight:600;">{{ commuteLabel }}</span></div>
+          <input type="range" min="0" max="60" value="{{ commuteMiles }}" onChange="{{ setCommute }}" style="width:100%;accent-color:var(--color-accent);"></input>
+        </div>
+        <div onClick="{{ toggleRemote }}" style="{{ remoteToggleStyle }}">
+          <div style="{{ remoteCheckStyle }}"><sc-if value="{{ remoteOk }}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-bg)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"></path></svg></sc-if></div>
+          <div>
+            <div style="font-family:var(--font-heading);font-weight:800;font-size:14px;">Remote roles are fine</div>
+            <div style="font-size:12px;color:var(--color-neutral-700);">Include fully-remote postings regardless of company location</div>
+          </div>
+        </div>
+        <sc-if value="{{ remoteOk }}">
+        <div style="margin-top:var(--space-3);margin-bottom:var(--space-4);">
+          <label style="display:block;font-size:12px;margin-bottom:8px;color:var(--color-neutral-700);">Include remote roles based in</label>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+            <sc-for list="{{ remoteCountryChips }}" as="rc" hint-placeholder-count="3">
+              <div style="{{ rc.style }}">
+                {{ rc.name }}
+                <button onClick="{{ rc.onRemove }}" style="all:unset;cursor:pointer;display:inline-flex;margin-left:8px;color:var(--color-neutral-700);"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg></button>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <input class="input" placeholder="Add a country, e.g. Australia" value="{{ newRemoteCountry }}" onChange="{{ setNewRemoteCountry }}" onKeyDown="{{ addRemoteCountryOnEnter }}"></input>
+            <button onClick="{{ addRemoteCountry }}" class="btn btn-secondary">Add</button>
+          </div>
+        </div>
+        </sc-if>
+        <div style="margin-bottom:var(--space-4);">
+          <label style="display:block;font-size:12px;margin-bottom:8px;color:var(--color-neutral-700);">Eligible to work in</label>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+            <sc-for list="{{ countryChips }}" as="c" hint-placeholder-count="5">
+              <div style="{{ c.style }}">
+                {{ c.name }}
+                <button onClick="{{ c.onRemove }}" style="all:unset;cursor:pointer;display:inline-flex;margin-left:8px;color:var(--color-neutral-700);"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg></button>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <input class="input" placeholder="Add a country, e.g. Australia" value="{{ newCountry }}" onChange="{{ setNewCountry }}" onKeyDown="{{ addCountryOnEnter }}"></input>
+            <button onClick="{{ addCountry }}" class="btn btn-secondary">Add</button>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:var(--space-6);">
+          <button onClick="{{ goBack }}" class="{{ ghostBtnStyle }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg>Back</button>
+          <button onClick="{{ goNext }}" class="{{ primaryBtnStyle }}">Continue<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"></path></svg></button>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ step3 }}">
+      <div>
+        <h2 style="font-family:var(--font-heading);font-weight:800;font-size:26px;margin:0 0 6px;">What matters to you?</h2>
+        <p style="font-size:14px;color:var(--color-neutral-700);margin:0 0 var(--space-4);">Pick any industries you're drawn to, and tell me anything else — team size, mission, pace, whatever you'd tell a friend.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:var(--space-4);">
+          <sc-for list="{{ industryChips }}" as="ind" hint-placeholder-count="5">
+            <div onClick="{{ ind.onToggle }}" style="{{ ind.style }}">{{ ind.name }}</div>
+          </sc-for>
+        </div>
+        <textarea class="input" placeholder="e.g. I want a small team, real ownership, and a product people actually love. Not interested in ad-tech." value="{{ industriesText }}" onChange="{{ setIndustriesText }}"></textarea>
+        <div style="display:flex;justify-content:space-between;margin-top:var(--space-6);">
+          <button onClick="{{ goBack }}" class="{{ ghostBtnStyle }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg>Back</button>
+          <button onClick="{{ goNext }}" class="{{ primaryBtnStyle }}">Continue<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"></path></svg></button>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ step4 }}">
+      <div>
+        <h2 style="font-family:var(--font-heading);font-weight:800;font-size:26px;margin:0 0 6px;">One more thing.</h2>
+        <p style="font-size:14px;color:var(--color-neutral-700);margin:0 0 var(--space-4);">What's the least you'd accept? I'll filter out anything below this.</p>
+        <div style="display:flex;gap:10px;">
+          <div style="flex:1;">
+            <label style="display:block;font-size:12px;margin-bottom:5px;color:var(--color-neutral-700);">Minimum salary</label>
+            <input class="input" type="number" step="5000" value="{{ minSalary }}" onChange="{{ setMinSalary }}"></input>
+          </div>
+          <div style="width:120px;">
+            <label style="display:block;font-size:12px;margin-bottom:5px;color:var(--color-neutral-700);">Currency</label>
+            <select class="input" value="{{ currency }}" onChange="{{ setCurrency }}">
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+              <option value="CAD">CAD</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:var(--space-6);">
+          <button onClick="{{ goBack }}" class="{{ ghostBtnStyle }}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg>Back</button>
+          <button onClick="{{ startScan }}" class="{{ primaryBtnStyle }}">Find my roles<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"></path><path d="M21 21l-4.3-4.3"></path></svg></button>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ step5 }}">
+      <div style="text-align:center;padding:var(--space-8) 0;">
+        <div style="width:52px;height:52px;margin:0 auto var(--space-4);border:3px solid var(--color-divider);border-top-color:var(--color-accent);border-radius:50%;animation:spin 0.8s linear infinite;"></div>
+        <h2 style="font-family:var(--font-heading);font-weight:800;font-size:22px;margin:0 0 6px;">{{ scanStatusLine }}</h2>
+        <p style="font-size:14px;color:var(--color-neutral-700);">Scanning LinkedIn, Indeed, company sites and Wellfound for {{ roleCount }} role{{ roleCountPlural }}...</p>
+      </div>
+      </sc-if>
+
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isDashboard }}" hint-placeholder-val="{{ false }}">
+  <div>
+    <div style="display:flex;align-items:center;gap:var(--space-4);padding:var(--space-3) var(--space-4);border-bottom:2px solid var(--color-divider);">
+      <div style="font-family:var(--font-heading);font-weight:800;font-size:18px;">Sherpa</div>
+      <div style="flex:1;"></div>
+      <button onClick="{{ restart }}" class="{{ ghostBtnSmallStyle }}">Restart onboarding</button>
+      <div style="width:32px;height:32px;background:var(--color-accent);color:var(--color-bg);display:flex;align-items:center;justify-content:center;font-family:var(--font-heading);font-weight:800;font-size:13px;">JD</div>
+    </div>
+
+    <div style="padding:var(--space-4) var(--space-6);max-width:1400px;margin:0 auto;">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:var(--space-3);margin-bottom:var(--space-4);">
+        <div>
+          <h1 style="font-family:var(--font-heading);font-weight:800;font-size:28px;margin:0 0 4px;">{{ jobCount }} roles matched</h1>
+          <div style="font-size:13px;color:var(--color-neutral-700);">{{ newSinceLabel }} · Last scanned {{ lastScan }}</div>
+        </div>
+        <button onClick="{{ runScan }}" class="{{ secondaryBtnStyle }}" disabled="{{ scanning }}">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="{{ refreshIconStyle }}"><path d="M21 12a9 9 0 1 1-3-6.7"></path><path d="M21 3v6h-6"></path></svg>
+          {{ scanButtonLabel }}
+        </button>
+      </div>
+
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:var(--space-3);">
+        <div style="position:relative;flex:1;min-width:220px;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-neutral-600)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="position:absolute;left:10px;top:11px;pointer-events:none;"><path d="M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z"></path><path d="M21 21l-4.3-4.3"></path></svg>
+          <input class="input" placeholder="Search company or title" value="{{ query }}" onChange="{{ setQuery }}"></input>
+        </div>
+        <sc-for list="{{ statusFilters }}" as="sf" hint-placeholder-count="4">
+          <button onClick="{{ sf.onClick }}" class="{{ sf.style }}">{{ sf.label }}</button>
+        </sc-for>
+      </div>
+
+      <div style="border:1px solid var(--color-divider);overflow-x:auto;">
+        <table class="table" style="min-width:960px;">
+          <thead>
+            <tr>
+              <sc-for list="{{ headers }}" as="h" hint-placeholder-count="6">
+                <th onClick="{{ h.onClick }}" class="{{ h.style }}">{{ h.label }}</th>
+              </sc-for>
+            </tr>
+          </thead>
+          <tbody>
+            <sc-for list="{{ rows }}" as="row" hint-placeholder-count="8">
+              <tr style="border-bottom:1px solid var(--color-divider);">
+                <td style="padding:10px 12px;vertical-align:top;">
+                  <div style="font-weight:600;">{{ row.company }}</div>
+                  <div style="font-size:11px;color:var(--color-neutral-600);">{{ row.source }} · {{ row.location }}</div>
+                </td>
+                <td style="padding:10px 12px;vertical-align:top;">
+                  <span onClick="{{ row.onOpen }}" style="cursor:pointer;font-weight:600;color:var(--color-text);">{{ row.title }}</span>
+                  <div style="font-size:11px;color:var(--color-neutral-600);margin-top:2px;">{{ row.salaryLabel }}</div>
+                </td>
+                <td style="padding:10px 12px;vertical-align:top;white-space:nowrap;">{{ row.posted }}</td>
+                <td style="padding:10px 12px;vertical-align:top;white-space:nowrap;">
+                  <span class="{{ row.matchStyle }}">{{ row.matchLabel }}</span>
+                </td>
+                <td style="padding:10px 12px;vertical-align:top;">
+                  <span class="{{ row.statusStyle }}">{{ row.statusLabel }}</span>
+                </td>
+                <td style="padding:10px 12px;vertical-align:top;min-width:160px;">
+                  <input class="{{ commentInputStyle }}" placeholder="Add a note..." value="{{ row.comments }}" onChange="{{ row.onComment }}"></input>
+                </td>
+                <td style="padding:10px 12px;vertical-align:top;white-space:nowrap;">
+                  <div style="display:flex;gap:6px;">
+                    <button onClick="{{ row.onCoverLetter }}" class="{{ actionBtnStyle }}" title="Generate cover letter">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.2L18 9l-4.1 1.8L12 15l-1.9-4.2L6 9l4.1-1.8L12 3z"></path></svg>
+                      Letter
+                    </button>
+                    <button onClick="{{ row.onCv }}" class="{{ actionBtnStyle }}" title="Generate tailored CV">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><path d="M14 2v6h6"></path></svg>
+                      CV
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+        <sc-if value="{{ noRows }}">
+          <div style="padding:var(--space-8);text-align:center;color:var(--color-neutral-700);font-size:14px;">No roles match these filters.</div>
+        </sc-if>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ hasDrawer }}">
+  <div style="position:fixed;inset:0;background:color-mix(in srgb, var(--color-neutral-900) 45%, transparent);display:flex;justify-content:flex-end;z-index:40;" onClick="{{ closeDrawer }}">
+    <div onClick="{{ stopProp }}" style="width:min(480px,100%);background:var(--color-bg);height:100%;overflow-y:auto;padding:var(--space-6);box-shadow:var(--shadow-lg);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:var(--space-4);">
+        <div>
+          <div style="font-size:12px;color:var(--color-accent);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">{{ drawerJob.source }}</div>
+          <h2 style="font-family:var(--font-heading);font-weight:800;font-size:24px;margin:0 0 4px;">{{ drawerJob.title }}</h2>
+          <div style="font-size:14px;color:var(--color-neutral-700);">{{ drawerJob.company }} · {{ drawerJob.location }}</div>
+        </div>
+        <button onClick="{{ closeDrawer }}" style="all:unset;cursor:pointer;color:var(--color-neutral-700);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg></button>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:var(--space-4);">
+        <span class="{{ drawerJob.matchStyle }}">{{ drawerJob.matchLabel }}</span>
+        <span class="{{ drawerJob.statusStyle }}">{{ drawerJob.statusLabel }}</span>
+      </div>
+      <div style="height:2px;background:var(--color-divider);margin-bottom:var(--space-4);"></div>
+      <div style="font-size:13px;color:var(--color-neutral-700);margin-bottom:var(--space-3);">{{ drawerJob.salaryLabel }} · Posted {{ drawerJob.posted }}</div>
+      <p style="font-size:14px;line-height:1.6;white-space:pre-line;">{{ drawerJob.description }}</p>
+      <div style="display:flex;gap:8px;margin-top:var(--space-6);">
+        <button onClick="{{ drawerJob.onCoverLetter }}" class="{{ primaryBtnStyle }}">Generate cover letter</button>
+        <button onClick="{{ drawerJob.onCv }}" class="{{ secondaryBtnStyle }}">Generate tailored CV</button>
+        <div style="flex:1;"></div>
+        <button onClick="{{ drawerJob.onMarkApplied }}" class="{{ ghostBtnStyle }}">{{ drawerJob.applyToggleLabel }}</button>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ hasModal }}">
+  <div style="position:fixed;inset:0;display:grid;place-items:center;padding:var(--space-4);background:color-mix(in srgb, var(--color-neutral-900) 50%, transparent);z-index:50;" onClick="{{ closeModal }}">
+    <div onClick="{{ stopProp }}" style="width:min(560px,100%);max-height:85vh;overflow-y:auto;display:flex;flex-direction:column;gap:var(--space-3);padding:var(--space-4);background:var(--color-surface);box-shadow:var(--shadow-lg);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div style="font-family:var(--font-heading);font-weight:800;font-size:19px;">{{ modalTitle }}</div>
+        <button onClick="{{ closeModal }}" style="all:unset;cursor:pointer;color:var(--color-neutral-700);"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg></button>
+      </div>
+      <div style="font-size:13px;color:var(--color-neutral-700);">{{ modalSubtitle }}</div>
+      <sc-if value="{{ modalLoading }}">
+        <div style="padding:var(--space-8) 0;text-align:center;">
+          <div style="width:36px;height:36px;margin:0 auto var(--space-3);border:3px solid var(--color-divider);border-top-color:var(--color-accent);border-radius:50%;animation:spin 0.8s linear infinite;"></div>
+          <div style="font-size:13px;color:var(--color-neutral-700);">Writing in your voice...</div>
+        </div>
+      </sc-if>
+      <sc-if value="{{ modalReady }}">
+        <textarea style="width:100%;min-height:280px;padding:var(--space-3);font:inherit;font-size:14px;line-height:1.6;background:var(--color-bg);border:1px solid var(--color-divider);resize:vertical;" value="{{ modalText }}" onChange="{{ setModalText }}"></textarea>
+        <div style="display:flex;justify-content:flex-end;gap:8px;">
+          <button onClick="{{ regenerateModal }}" class="{{ ghostBtnStyle }}">Regenerate</button>
+          <button onClick="{{ closeModal }}" class="{{ primaryBtnStyle }}">Save & close</button>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const COUNTRY_OPTIONS = ['United States', 'Canada', 'United Kingdom', 'Germany'];
+const INDUSTRY_OPTIONS = ['Climate tech', 'Healthcare', 'Fintech', 'Developer tools', 'Consumer', 'No preference'];
+
+const JOBS_SEED = [
+  { id: 1, company: 'Linear', title: 'Senior Product Manager', source: 'Company site', location: 'San Francisco, CA (remote ok)', posted: '2026-07-31', match: 96, status: 'new', comments: '', salary: '$175k–$210k', remote: true,
+    description: 'Own the roadmap for a core workflow surface used by thousands of engineering teams daily. You will work closely with design and a small, senior engineering pod — high ownership, low process.' },
+  { id: 2, company: 'Ramp', title: 'Group Product Manager, Payments', source: 'LinkedIn', posted: '2026-07-30', match: 91, status: 'new', comments: '', salary: '$190k–$225k', location: 'New York, NY', remote: false,
+    description: 'Lead a team of 3 PMs across the payments platform. Deep fintech domain work, direct exposure to executive leadership, and a fast-moving roadmap tied to revenue.' },
+  { id: 3, company: 'Notion', title: 'Product Lead, AI', source: 'Indeed', posted: '2026-07-29', match: 89, status: 'viewed', comments: 'Recruiter reached out Tuesday', salary: '$180k–$215k', location: 'San Francisco, CA (remote ok)', remote: true,
+    description: 'Shape the product strategy for Notion AI across consumer and team use cases. Cross-functional partnership with research and design; direct line to the CPO.' },
+  { id: 4, company: 'Vanta', title: 'Senior PM, Trust Platform', source: 'Wellfound', posted: '2026-07-29', match: 84, status: 'new', comments: '', salary: '$160k–$195k', location: 'Remote (US)', remote: true,
+    description: 'Own the platform that customers use to demonstrate compliance to their own customers. Heavy customer discovery, tight collaboration with a security-minded engineering team.' },
+  { id: 5, company: 'Rippling', title: 'Product Manager, Payroll', source: 'LinkedIn', posted: '2026-07-27', match: 78, status: 'applied', comments: 'Applied with tailored letter — waiting to hear back', salary: '$155k–$185k', location: 'San Francisco, CA', remote: false,
+    description: 'Drive the roadmap for core payroll processing across all 50 states. Deep regulatory complexity, high customer stakes, strong internal mobility track record.' },
+  { id: 6, company: 'Ashby', title: 'Head of Product', source: 'Company site', posted: '2026-07-26', match: 88, status: 'new', comments: '', salary: '$210k–$250k', location: 'Remote (US/Canada)', remote: true,
+    description: 'First product leadership hire. Set product strategy across ATS, sourcing and analytics; build and mentor a small team as the company scales past Series C.' },
+  { id: 7, company: 'Figma', title: 'Senior Product Manager, Dev Mode', source: 'Indeed', posted: '2026-07-24', match: 74, status: 'viewed', comments: '', salary: '$185k–$220k', location: 'San Francisco, CA', remote: false,
+    description: 'Own the handoff experience between designers and engineers. Close partnership with the design systems team and a highly engaged, vocal user base.' },
+  { id: 8, company: 'Watershed', title: 'Product Manager, Climate Data', source: 'Wellfound', posted: '2026-07-22', match: 82, status: 'new', comments: '', salary: '$150k–$180k', location: 'San Francisco, CA (remote ok)', remote: true,
+    description: 'Build the data pipelines and reporting tools enterprises use to manage carbon accounting. Mission-driven team, direct customer exposure, small and senior org.' },
+  { id: 9, company: 'Stripe', title: 'Product Manager, Billing', source: 'LinkedIn', posted: '2026-07-20', match: 69, status: 'new', comments: '', salary: '$170k–$205k', location: 'Seattle, WA', remote: false,
+    description: 'Own subscription billing primitives used by hundreds of thousands of businesses. Rigorous, metrics-driven culture with a long roadmap runway.' },
+  { id: 10, company: 'Retool', title: 'Senior PM, Platform', source: 'Company site', posted: '2026-07-18', match: 71, status: 'viewed', comments: 'Job looks solid but comp band unclear', salary: '$165k–$195k', location: 'Remote (US)', remote: true,
+    description: 'Shape the extensibility story for internal tools builders. Small, opinionated team; heavy weight given to technical product sense.' },
+];
+
+class Component extends DCLogic {
+  state = {
+    view: 'onboarding', step: 0,
+    resumeFile: null,
+    roles: ['Senior Product Manager', 'Product Lead', 'Group Product Manager'],
+    newRole: '',
+    homeAddress: 'San Francisco, CA', commuteMiles: 25, remoteOk: true,
+    countries: ['United States'], newCountry: '',
+    remoteCountries: ['United States'], newRemoteCountry: '',
+    industriesSel: [], industriesText: '',
+    minSalary: 140000, currency: 'USD',
+    scanning: false, scanStep: 0,
+    jobs: JOBS_SEED,
+    sortKey: 'posted', sortDir: 'desc',
+    statusFilter: 'all', query: '',
+    drawerJobId: null,
+    modal: null, // { type: 'cover'|'cv', jobId, loading, text }
+    lastScan: 'Today, 9:12 AM',
+  };
+
+  handleUploadClick = () => this.setState({ resumeFile: this.state.resumeFile ? this.state.resumeFile : 'resume-jamie-doe.pdf' });
+  goNext = () => this.setState(s => ({ step: s.step + 1 }));
+  goBack = () => this.setState(s => ({ step: Math.max(0, s.step - 1) }));
+
+  setNewRole = e => this.setState({ newRole: e.target.value });
+  addRole = () => {
+    const v = this.state.newRole.trim();
+    if (!v) return;
+    this.setState(s => ({ roles: [...s.roles, v], newRole: '' }));
+  };
+  addRoleOnEnter = e => { if (e.key === 'Enter') this.addRole(); };
+  removeRole = name => this.setState(s => ({ roles: s.roles.filter(r => r !== name) }));
+
+  setHomeAddress = e => this.setState({ homeAddress: e.target.value });
+  setCommute = e => this.setState({ commuteMiles: Number(e.target.value) });
+  toggleRemote = () => this.setState(s => ({ remoteOk: !s.remoteOk }));
+  setNewCountry = e => this.setState({ newCountry: e.target.value });
+  addCountry = () => {
+    const v = this.state.newCountry.trim();
+    if (!v) return;
+    this.setState(s => ({ countries: s.countries.includes(v) ? s.countries : [...s.countries, v], newCountry: '' }));
+  };
+  addCountryOnEnter = e => { if (e.key === 'Enter') this.addCountry(); };
+  removeCountry = name => this.setState(s => ({ countries: s.countries.filter(c => c !== name) }));
+  setNewRemoteCountry = e => this.setState({ newRemoteCountry: e.target.value });
+  addRemoteCountry = () => {
+    const v = this.state.newRemoteCountry.trim();
+    if (!v) return;
+    this.setState(s => ({ remoteCountries: s.remoteCountries.includes(v) ? s.remoteCountries : [...s.remoteCountries, v], newRemoteCountry: '' }));
+  };
+  addRemoteCountryOnEnter = e => { if (e.key === 'Enter') this.addRemoteCountry(); };
+  removeRemoteCountry = name => this.setState(s => ({ remoteCountries: s.remoteCountries.filter(c => c !== name) }));
+  toggleIndustry = name => this.setState(s => ({
+    industriesSel: s.industriesSel.includes(name) ? s.industriesSel.filter(c => c !== name) : [...s.industriesSel, name],
+  }));
+  setIndustriesText = e => this.setState({ industriesText: e.target.value });
+  setMinSalary = e => this.setState({ minSalary: Number(e.target.value) });
+  setCurrency = e => this.setState({ currency: e.target.value });
+
+  startScan = () => {
+    this.setState({ step: 5, scanning: true, scanStep: 0 });
+    this._scanTimer = setInterval(() => {
+      this.setState(s => {
+        if (s.scanStep >= 3) { clearInterval(this._scanTimer); }
+        return { scanStep: Math.min(3, s.scanStep + 1) };
+      });
+    }, 700);
+    setTimeout(() => { clearInterval(this._scanTimer); this.setState({ view: 'dashboard' }); }, 2400);
+  };
+  restart = () => { this.setState({ view: 'onboarding', step: 0 }); };
+
+  runScan = () => {
+    if (this.state.scanning) return;
+    this.setState({ scanning: true });
+    setTimeout(() => {
+      this.setState(s => ({
+        scanning: false,
+        lastScan: 'Just now',
+        jobs: [{ id: Date.now(), company: 'Airtable', title: 'Senior Product Manager, Automations', source: 'Company site', posted: new Date().toISOString().slice(0, 10), match: 92, status: 'new', comments: '', salary: '$180k–$215k', location: 'Remote (US)', remote: true, description: 'Newly posted role matching your profile — own automation workflows end to end for a fast-growing platform team.' }, ...s.jobs],
+      }));
+    }, 1400);
+  };
+
+  setSortKey = key => this.setState(s => ({ sortKey: key, sortDir: s.sortKey === key && s.sortDir === 'desc' ? 'asc' : 'desc' }));
+  setStatusFilter = f => this.setState({ statusFilter: f });
+  setQuery = e => this.setState({ query: e.target.value });
+  setComment = (id, val) => this.setState(s => ({ jobs: s.jobs.map(j => j.id === id ? { ...j, comments: val } : j) }));
+
+  openDrawer = id => this.setState(s => ({
+    drawerJobId: id,
+    jobs: s.jobs.map(j => j.id === id && j.status === 'new' ? { ...j, status: 'viewed' } : j),
+  }));
+  closeDrawer = () => this.setState({ drawerJobId: null });
+  markApplied = id => this.setState(s => ({ jobs: s.jobs.map(j => j.id === id ? { ...j, status: j.status === 'applied' ? 'viewed' : 'applied' } : j) }));
+
+  stopProp = e => e.stopPropagation();
+
+  openModal = (jobId, type) => {
+    this.setState(s => ({
+      modal: { jobId, type, loading: true, text: '' },
+      jobs: s.jobs.map(j => j.id === jobId && j.status === 'new' ? { ...j, status: 'viewed' } : j),
+    }));
+    this._genModal(jobId, type);
+  };
+  _genModal = (jobId, type) => {
+    setTimeout(() => {
+      this.setState(s => {
+        if (!s.modal || s.modal.jobId !== jobId) return null;
+        const job = s.jobs.find(j => j.id === jobId);
+        const text = type === 'cover'
+          ? `Hi there,\n\nI've been following ${job.company}'s work closely, and the ${job.title} role is exactly the kind of problem I want to spend my next few years on. At my last company I led a similar rebuild from zero to shipped, working directly with a two-person eng pod — the same lean setup I see you run.\n\nWhat draws me in specifically is the ownership: I do my best work when I'm close to the decisions, not three layers removed from them. Happy to walk through specifics whenever's useful.\n\nJamie`
+          : `JAMIE DOE\nSenior Product Manager\n\nTailored for: ${job.title} @ ${job.company}\n\nSUMMARY\nProduct leader with 7 years shipping 0-to-1 and scale-stage B2B products, with particular depth in the workflows this role covers.\n\nRELEVANT EXPERIENCE\n— Led a cross-functional team of 6 shipping a rebuilt core workflow, cutting time-to-value by 40%\n— Partnered directly with a senior 3-person eng pod, low process, high ownership\n— Owned roadmap and pricing input for a product line generating $12M ARR`;
+        return { modal: { ...s.modal, loading: false, text } };
+      });
+    }, 1300);
+  };
+  regenerateModal = () => {
+    if (!this.state.modal) return;
+    const { jobId, type } = this.state.modal;
+    this.setState(s => ({ modal: { ...s.modal, loading: true } }));
+    this._genModal(jobId, type);
+  };
+  setModalText = e => this.setState(s => ({ modal: { ...s.modal, text: e.target.value } }));
+  closeModal = () => this.setState({ modal: null });
+
+  renderVals() {
+    const s = this.state;
+    const accent = 'var(--color-accent)';
+
+    const primaryBtnStyle = 'btn btn-primary';
+    const secondaryBtnStyle = 'btn btn-secondary';
+    const ghostBtnStyle = 'btn btn-ghost';
+    const ghostBtnSmallStyle = 'btn btn-ghost';
+    const inputStyle = 'input';
+    const textareaStyle = 'input';
+    const commentInputStyle = 'input';
+    const actionBtnStyle = 'btn btn-secondary';
+
+    // onboarding
+    const step = s.step;
+    const progressDots = [0, 1, 2, 3, 4, 5].map(i => ({ color: i <= step ? accent : 'var(--color-neutral-300)' }));
+    const roleChips = s.roles.map(r => ({ name: r, onRemove: () => this.removeRole(r) }));
+    const countryChips = s.countries.map(name => ({
+      name, onRemove: () => this.removeCountry(name),
+      style: `font-size:13px;padding:7px 10px 7px 14px;border:1px solid var(--color-divider);background:var(--color-surface);color:var(--color-text);display:inline-flex;align-items:center;`,
+    }));
+    const remoteCountryChips = s.remoteCountries.map(name => ({
+      name, onRemove: () => this.removeRemoteCountry(name),
+      style: `font-size:13px;padding:7px 10px 7px 14px;border:1px solid var(--color-divider);background:var(--color-surface);color:var(--color-text);display:inline-flex;align-items:center;`,
+    }));
+    const industryChips = INDUSTRY_OPTIONS.map(name => {
+      const sel = s.industriesSel.includes(name);
+      return { name, onToggle: () => this.toggleIndustry(name),
+        style: `cursor:pointer;font-size:13px;padding:7px 14px;border:1px solid ${sel ? accent : 'var(--color-divider)'};background:${sel ? 'var(--color-accent-100)' : 'transparent'};color:${sel ? 'var(--color-accent-700)' : 'var(--color-text)'};` };
+    });
+
+    const scanLines = ['Reading your resume...', 'Matching roles across sources...', 'Ranking by fit and commute...', 'Almost there...'];
+
+    // dashboard filtering/sorting
+    let jobs = s.jobs.filter(j => {
+      if (s.statusFilter !== 'all' && j.status !== s.statusFilter) return false;
+      const q = s.query.trim().toLowerCase();
+      if (q && !(j.company.toLowerCase().includes(q) || j.title.toLowerCase().includes(q))) return false;
+      return true;
+    });
+    const dir = s.sortDir === 'asc' ? 1 : -1;
+    jobs = [...jobs].sort((a, b) => {
+      let av = a[s.sortKey], bv = b[s.sortKey];
+      if (s.sortKey === 'posted') { av = new Date(a.posted).getTime(); bv = new Date(b.posted).getTime(); }
+      if (av < bv) return -1 * dir; if (av > bv) return 1 * dir; return 0;
+    });
+
+    const statusMeta = {
+      new: { label: 'New', style: 'tag tag-accent' },
+      viewed: { label: 'Viewed', style: 'tag tag-neutral' },
+      applied: { label: 'Applied', style: 'tag tag-neutral', darkOverride: true },
+    };
+    const fmtDate = d => new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+    const mkRow = j => ({
+      ...j,
+      posted: fmtDate(j.posted),
+      salaryLabel: j.salary,
+      matchLabel: j.match + '% match',
+      matchStyle: j.match >= 85 ? 'tag tag-outline' : 'tag tag-neutral',
+      statusLabel: statusMeta[j.status].label,
+      statusStyle: statusMeta[j.status].style,
+      onOpen: () => this.openDrawer(j.id),
+      onComment: e => this.setComment(j.id, e.target.value),
+      onCoverLetter: () => this.openModal(j.id, 'cover'),
+      onCv: () => this.openModal(j.id, 'cv'),
+    });
+    const rows = jobs.map(mkRow);
+
+    const headerDefs = [
+      ['company', 'Employer'], ['title', 'Role'], ['posted', 'Posted'], ['match', 'Match'], ['status', 'Status'], ['comments', 'Notes'], [null, 'Actions'],
+    ];
+    const headers = headerDefs.map(([key, label]) => ({
+      label: key ? label + (s.sortKey === key ? (s.sortDir === 'asc' ? ' ▲' : ' ▼') : '') : label,
+      onClick: key ? () => this.setSortKey(key) : undefined,
+      style: key ? 'cursor:pointer;' : '',
+    }));
+
+    const filterDefs = [['all', 'All'], ['new', 'New'], ['viewed', 'Viewed'], ['applied', 'Applied']];
+    const statusFilters = filterDefs.map(([key, label]) => {
+      const active = s.statusFilter === key;
+      return { label, onClick: () => this.setStatusFilter(key),
+        style: active ? 'btn btn-primary' : 'btn btn-secondary' };
+    });
+
+    const newCount = s.jobs.filter(j => j.status === 'new').length;
+
+    let drawerJob = null;
+    if (s.drawerJobId) {
+      const j = s.jobs.find(x => x.id === s.drawerJobId);
+      if (j) {
+        drawerJob = {
+          ...j, posted: fmtDate(j.posted), salaryLabel: j.salary,
+          matchLabel: j.match + '% match',
+          matchStyle: 'tag tag-outline',
+          statusLabel: statusMeta[j.status].label, statusStyle: statusMeta[j.status].style,
+          onCoverLetter: () => this.openModal(j.id, 'cover'), onCv: () => this.openModal(j.id, 'cv'),
+          onMarkApplied: () => this.markApplied(j.id),
+          applyToggleLabel: j.status === 'applied' ? 'Mark not applied' : 'Mark as applied',
+        };
+      }
+    }
+
+    let modalTitle = '', modalSubtitle = '';
+    if (s.modal) {
+      const job = s.jobs.find(j => j.id === s.modal.jobId);
+      modalTitle = s.modal.type === 'cover' ? 'Cover letter' : 'Tailored CV';
+      modalSubtitle = job ? `For ${job.title} at ${job.company}` : '';
+    }
+
+    return {
+      isOnboarding: s.view === 'onboarding', isDashboard: s.view === 'dashboard',
+      stepNumber: step + 1, progressDots,
+      step0: step === 0, step1: step === 1, step2: step === 2, step3: step === 3, step4: step === 4, step5: step === 5,
+      dropzoneStyle: `border:1px dashed var(--color-divider);padding:var(--space-6);text-align:center;cursor:pointer;background:${s.resumeFile ? 'var(--color-accent-100)' : 'var(--color-surface)'};display:flex;flex-direction:column;align-items:center;gap:6px;`,
+      dropzoneIconColor: s.resumeFile ? 'var(--color-accent-700)' : 'var(--color-neutral-700)',
+      dropzoneTitle: s.resumeFile ? s.resumeFile : 'Click to upload your resume',
+      dropzoneSubtitle: s.resumeFile ? 'Uploaded — click Continue' : 'PDF or DOCX, up to 10MB',
+      nextDisabled: !s.resumeFile,
+      nextButtonStyle: primaryBtnStyle,
+      handleUploadClick: this.handleUploadClick, goNext: this.goNext, goBack: this.goBack,
+      primaryBtnStyle, secondaryBtnStyle, ghostBtnStyle, ghostBtnSmallStyle, inputStyle, textareaStyle, commentInputStyle, actionBtnStyle,
+      roleChips, newRole: s.newRole, setNewRole: this.setNewRole, addRole: this.addRole, addRoleOnEnter: this.addRoleOnEnter,
+      homeAddress: s.homeAddress, setHomeAddress: this.setHomeAddress,
+      commuteMiles: s.commuteMiles, commuteLabel: s.commuteMiles === 0 ? 'On-site only' : `${s.commuteMiles} miles`, setCommute: this.setCommute,
+      remoteOk: s.remoteOk, toggleRemote: this.toggleRemote,
+      remoteToggleStyle: `display:flex;align-items:center;gap:12px;cursor:pointer;border:1px solid var(--color-divider);padding:12px 14px;background:${s.remoteOk ? 'var(--color-accent-100)' : 'transparent'};`,
+      remoteCheckStyle: `width:20px;height:20px;flex:none;display:flex;align-items:center;justify-content:center;border:1.5px solid ${s.remoteOk ? accent : 'var(--color-divider)'};background:${s.remoteOk ? accent : 'transparent'};`,
+      countryChips, newCountry: s.newCountry, setNewCountry: this.setNewCountry, addCountry: this.addCountry, addCountryOnEnter: this.addCountryOnEnter,
+      remoteCountryChips, newRemoteCountry: s.newRemoteCountry, setNewRemoteCountry: this.setNewRemoteCountry, addRemoteCountry: this.addRemoteCountry, addRemoteCountryOnEnter: this.addRemoteCountryOnEnter,
+      industryChips, industriesText: s.industriesText, setIndustriesText: this.setIndustriesText,
+      minSalary: s.minSalary, setMinSalary: this.setMinSalary, currency: s.currency, setCurrency: this.setCurrency,
+      startScan: this.startScan,
+      roleCount: s.roles.length, roleCountPlural: s.roles.length === 1 ? '' : 's',
+      scanStatusLine: scanLines[Math.min(s.scanStep, scanLines.length - 1)],
+      restart: this.restart,
+      jobCount: s.jobs.length,
+      newSinceLabel: newCount > 0 ? `${newCount} new since your last visit` : 'All caught up',
+      lastScan: s.lastScan,
+      runScan: this.runScan, scanning: s.scanning, scanButtonLabel: s.scanning ? 'Scanning...' : 'Run scan now',
+      refreshIconStyle: s.scanning ? 'animation:spin 0.8s linear infinite;' : '',
+      query: s.query, setQuery: this.setQuery, searchInputStyle: 'input',
+      statusFilters, headers, rows, noRows: rows.length === 0,
+      hasDrawer: !!drawerJob, drawerJob: drawerJob || {}, closeDrawer: this.closeDrawer, stopProp: this.stopProp,
+      hasModal: !!s.modal, modalTitle, modalSubtitle,
+      modalLoading: !!(s.modal && s.modal.loading), modalReady: !!(s.modal && !s.modal.loading),
+      modalText: s.modal ? s.modal.text : '', setModalText: this.setModalText,
+      regenerateModal: this.regenerateModal, closeModal: this.closeModal,
+    };
+  }
+}
+</script>
+</body>
+</html>
