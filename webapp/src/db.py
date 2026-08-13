@@ -1,13 +1,13 @@
-"""SQLite persistence — the only module that touches sqlite3 directly.
+"""SQLite persistence. The only module that touches sqlite3 directly.
 
 Two tables: `users` (profile/onboarding answers + settings) and
 `job_progress` (per-user, per-job status/comments/generated docs). The job
-catalog itself (company, title, description, ...) stays in data/jobs.json —
-that's sample data meant to be hand-edited on disk, not user state.
+catalog itself (company, title, description, ...) stays in data/jobs.json,
+since that's sample data meant to be hand-edited on disk, not user state.
 
 Every write runs inside db_transaction(), which commits on success and
-rolls back on any exception, and every query is parameterized — no
-string-built SQL.
+rolls back on any exception, and every query is parameterized (no
+string-built SQL).
 """
 import json
 import sqlite3
@@ -24,7 +24,7 @@ DEFAULT_PRIORITY_WEIGHTS = {"role_match": 40, "location_fit": 30, "salary_fit": 
 # Seed progress for the sample jobs, so the demo dashboard isn't all "New" on first run.
 SEED_PROGRESS = {
     3: {"status": "viewed", "comments": "Recruiter reached out Tuesday"},
-    5: {"status": "applied", "comments": "Applied with tailored letter — waiting to hear back"},
+    5: {"status": "applied", "comments": "Applied with tailored letter, waiting to hear back"},
     7: {"status": "viewed", "comments": ""},
     10: {"status": "viewed", "comments": "Job looks solid but comp band unclear"},
 }

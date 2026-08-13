@@ -2,8 +2,8 @@
 
 run_scan() is the single entry point for refreshing match scores against
 the current profile. It's called on-demand today (a button in the
-dashboard). To add daily automation later — cron, APScheduler, a GitHub
-Action, whatever — call this same function on a timer; no changes needed
+dashboard). To add daily automation later (cron, APScheduler, a GitHub
+Action, whatever), call this same function on a timer; no changes needed
 here or in app.py's route logic.
 """
 from datetime import datetime, timezone

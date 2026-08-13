@@ -1,6 +1,6 @@
 """Placeholder AI functions.
 
-None of these call a real model yet — each returns a generic, deterministic
+None of these call a real model yet. Each returns a generic, deterministic
 hint derived from simple string/number rules. Every function's signature
 (what it takes, what it returns) is the contract a real LLM-backed
 implementation should keep, so swapping the body later is a drop-in change
@@ -101,7 +101,7 @@ def generate_tailored_resume(job, profile):
         f"Experienced professional with a track record directly relevant to this role's core "
         f"responsibilities: {job['description'][:140]}...\n\n"
         f"RELEVANT EXPERIENCE\n"
-        f"— [Placeholder] Achievement matching this role's key requirement\n"
-        f"— [Placeholder] Achievement demonstrating relevant domain depth\n"
-        f"— [Placeholder] Achievement showing scope/ownership fit for this level"
+        f"- [Placeholder] Achievement matching this role's key requirement\n"
+        f"- [Placeholder] Achievement demonstrating relevant domain depth\n"
+        f"- [Placeholder] Achievement showing scope/ownership fit for this level"
     )

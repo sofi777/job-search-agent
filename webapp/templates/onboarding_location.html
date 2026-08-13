@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Location — Dream Job Landing{% endblock %}
+{% from "_macros.html" import chip_row %}
+{% block title %}Location - Dream Job Landing{% endblock %}
 {% block body %}
 <div class="center-screen">
   <div class="page-narrow">
@@ -14,7 +15,7 @@
         <input class="input" id="home_address" name="home_address" value="{{ profile.home_address }}">
       </div>
       <div class="field">
-        <label for="commute_miles">Commute radius — <span id="commute_val">{{ profile.commute_miles }}</span> miles</label>
+        <label for="commute_miles">Commute radius: <span id="commute_val">{{ profile.commute_miles }}</span> miles</label>
         <input type="range" id="commute_miles" name="commute_miles" min="0" max="60" value="{{ profile.commute_miles }}"
                oninput="document.getElementById('commute_val').textContent = this.value" style="width:100%;accent-color:var(--color-accent);">
       </div>
@@ -22,18 +23,7 @@
 
     <div class="field">
       <label>Eligible to work in</label>
-      <div class="chip-row">
-        {% for c in profile.eligible_countries %}
-        <div class="chip">
-          {{ c }}
-          <form method="post" style="display:inline;">
-            <input type="hidden" name="action" value="remove_country">
-            <input type="hidden" name="country" value="{{ c }}">
-            <button type="submit" title="Remove">&times;</button>
-          </form>
-        </div>
-        {% endfor %}
-      </div>
+      {{ chip_row(profile.eligible_countries, 'remove_country', 'country') }}
       <form method="post" class="add-row">
         <input type="hidden" name="action" value="add_country">
         <input class="input" name="country" list="country-options" autocomplete="off" placeholder="Add a country, e.g. Australia">
@@ -53,18 +43,7 @@
 
     <div id="remote-countries-section" class="field" style="display:{{ 'block' if profile.remote_ok else 'none' }};">
       <label>Include remote roles based in</label>
-      <div class="chip-row">
-        {% for c in profile.remote_countries %}
-        <div class="chip">
-          {{ c }}
-          <form method="post" style="display:inline;">
-            <input type="hidden" name="action" value="remove_remote_country">
-            <input type="hidden" name="country" value="{{ c }}">
-            <button type="submit" title="Remove">&times;</button>
-          </form>
-        </div>
-        {% endfor %}
-      </div>
+      {{ chip_row(profile.remote_countries, 'remove_remote_country', 'country') }}
       <form method="post" class="add-row">
         <input type="hidden" name="action" value="add_remote_country">
         <input class="input" name="country" list="country-options" autocomplete="off" placeholder="Add a country, e.g. Australia">

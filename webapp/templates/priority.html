@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Edit ranking — Dream Job Landing{% endblock %}
+{% block title %}Edit ranking - Dream Job Landing{% endblock %}
 {% block body %}
 {% include "_nav.html" %}
 
 <div class="detail-card">
   <a href="{{ url_for('dashboard') }}" class="text-muted" style="text-decoration:none;">&larr; Back to dashboard</a>
   <h1 style="margin-top:var(--space-4);">Edit ranking</h1>
-  <p class="text-muted">How much each factor counts toward a job's match score. Relative weights — they don't need to add up to 100.</p>
+  <p class="text-muted">How much each factor counts toward a job's match score. Relative weights, they don't need to add up to 100.</p>
 
   <form method="post">
     {% for key, label in [('role_match', 'Role title match'), ('location_fit', 'Commute / remote fit'), ('salary_fit', 'Salary fit'), ('industry_fit', 'Industry fit')] %}

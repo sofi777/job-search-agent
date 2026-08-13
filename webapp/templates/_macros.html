@@ -1,0 +1,14 @@
+{% macro chip_row(items, action, field_name) %}
+<div class="chip-row">
+  {% for item in items %}
+  <div class="chip">
+    {{ item }}
+    <form method="post" style="display:inline;">
+      <input type="hidden" name="action" value="{{ action }}">
+      <input type="hidden" name="{{ field_name }}" value="{{ item }}">
+      <button type="submit" title="Remove">&times;</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+{% endmacro %}

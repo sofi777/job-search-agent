@@ -4,7 +4,7 @@
 Python objects for cheap reads (routes/templates access them directly, same
 as before). Every mutation goes through a save_*()/update_job_progress()
 call here, which is the only place outside src/db.py that talks to
-persistence — routes never touch SQL directly.
+persistence. Routes never touch SQL directly.
 """
 import json
 from datetime import datetime
@@ -104,7 +104,7 @@ def reload_jobs():
     """Re-read data/jobs.json (the catalog) and merge in this user's DB progress.
 
     Lets the sample catalog be hand-edited on disk and picked up without
-    restarting the Flask process — call via the "Reload sample data" action.
+    restarting the Flask process. Call via the "Reload sample data" action.
     Status/comments/generated docs live in SQLite and are untouched by this.
     """
     global jobs
