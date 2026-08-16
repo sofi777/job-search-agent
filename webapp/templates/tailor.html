@@ -4,13 +4,10 @@
 {% include "_nav.html" %}
 
 <style>
-  .tailor-shell { display: flex; align-items: flex-start; gap: var(--space-6); }
-  .chat-col { flex: 1.3; display: flex; flex-direction: column; min-width: 0; }
-  .chat-messages { min-height: 320px; max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-4); padding: 4px 4px var(--space-4); }
   .msg-row { display: flex; }
   .msg-row.user { justify-content: flex-end; }
-  .msg-bubble { max-width: 78%; white-space: pre-line; line-height: 1.55; }
-  .msg-row.user .msg-bubble { background: var(--color-accent-100); color: var(--color-accent-800); padding: 10px 16px; border-radius: 18px 18px 4px 18px; }
+  .msg-bubble { max-width: 88%; white-space: pre-line; line-height: 1.5; font-size: 13px; }
+  .msg-row.user .msg-bubble { background: var(--color-accent-100); color: var(--color-accent-800); padding: 8px 12px; border-radius: 14px 14px 4px 14px; }
   .msg-row.assistant .msg-bubble { max-width: 100%; padding: 0; }
   .chat-inputbar { display: flex; align-items: flex-end; gap: 8px; border: 1px solid var(--color-divider); border-radius: 22px; padding: 8px 8px 8px 16px; background: #fff; }
   .chat-inputbar textarea { flex: 1; border: none; background: transparent; resize: none; min-height: 24px; max-height: 160px; font: inherit; font-size: 14px; padding: 6px 0; outline: none; }
@@ -20,8 +17,7 @@
   .send-btn { background: var(--color-accent); color: #fff; border: none; border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; font-size: 16px; }
   .send-btn:hover { background: var(--color-accent-600); }
   .send-btn:disabled { opacity: 0.5; cursor: not-allowed; background: var(--color-accent); }
-  .chat-toolbar { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
-  .preview-col { flex: 1; overflow-y: auto; min-width: 0; }
+  .sending-note { font-size: 12px; margin-top: 6px; display: none; }
   .typing-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--color-neutral-600); margin-right: 4px; animation: typing-bounce 1.2s infinite ease-in-out; }
   .typing-dot:nth-child(2) { animation-delay: 0.2s; }
   .typing-dot:nth-child(3) { animation-delay: 0.4s; margin-right: 0; }
@@ -36,16 +32,25 @@
   #citation-dialog { max-width: 480px; }
   #citation-dialog .kicker { margin-bottom: var(--space-2); }
   #citation-dialog pre { white-space: pre-wrap; font: inherit; margin: 0; line-height: 1.5; }
+
+  .panes-row { display: flex; gap: var(--space-4); flex-wrap: wrap; margin-top: var(--space-4); align-items: flex-start; }
+  .pane { flex: 1; min-width: 280px; border: 1px solid var(--color-divider); display: flex; flex-direction: column; }
+  .pane-header { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--color-divider); background: var(--color-surface); }
+  .pane-model-select { flex: 1; min-height: 30px; font-size: 12px; }
+  .pane-toggle { all: unset; cursor: pointer; padding: 4px 8px; font-size: 11px; color: var(--color-neutral-700); }
+  .pane-body { padding: var(--space-3); }
+  .pane.collapsed .pane-body { display: none; }
+  .pane-chat { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-3); }
+  .pane-doc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .pane-doc { border: 1px solid var(--color-divider); padding: var(--space-3); white-space: pre-line; line-height: 1.55; font-size: 13px; max-height: 320px; overflow-y: auto; margin-bottom: 6px; }
+  .pane-error { display: block; margin-bottom: var(--space-3); font-size: 12px; }
+  .add-pane-btn { margin-top: var(--space-4); }
 </style>
 
 <div class="container">
   <a href="{{ url_for('job_detail', job_id=job.id) }}" class="text-muted" style="text-decoration:none;">&larr; Back to {{ job.title }}</a>
   <h1 style="margin-top:var(--space-4);">Tailor my application</h1>
   <p class="text-muted">{{ job.title }} at {{ job.company }}</p>
-
-  {% if error %}
-  <div class="tag tag-outline" style="display:block;padding:var(--space-3);margin-bottom:var(--space-3);">{{ error }}</div>
-  {% endif %}
 
   <div style="display:flex;gap:8px;margin:var(--space-4) 0;border-bottom:2px solid var(--color-divider);">
     {% for key, label in tab_labels.items() %}
@@ -55,87 +60,99 @@
     {% endfor %}
   </div>
 
-  <div class="tailor-shell">
+  <form method="post" action="{{ url_for('tailor_message', job_id=job.id, tab=tab) }}" enctype="multipart/form-data" id="chat-form">
+    <div class="attach-chip" id="attach-chip">
+      <span id="attach-name"></span>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+        <input type="checkbox" name="save_to_profile" id="save-to-profile">
+        Save for all jobs
+      </label>
+      <button type="button" onclick="clearAttachment()">&times;</button>
+    </div>
+    <div class="chat-inputbar">
+      <label for="attachment-input" class="attach-btn" title="Attach a file">&#128206;</label>
+      <input type="file" id="attachment-input" name="attachment" accept=".pdf,.docx,.txt,.md" hidden onchange="showAttachment()">
+      <textarea name="message" id="chat-input" rows="1"
+        placeholder="{{ 'Paste an application question…' if tab == 'qa' else 'Message all active panes…' }}"></textarea>
+      <button type="submit" class="send-btn" id="send-btn" title="Send to every pane with a model selected">&uarr;</button>
+    </div>
+    <div class="sending-note text-muted" id="sending-note">
+      <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
+      Generating in every active pane - this can take a while, especially on free-tier models.
+    </div>
 
-    <div class="chat-col">
-      <div class="chat-messages" id="chat-messages">
-        {% for m in chat %}
-        <div class="msg-row {{ m.role }}">
-          <div class="msg-bubble">
-            {{ m.rendered }}
-            {% if m.role == 'assistant' %}
-            <div class="msg-rating" data-message-id="{{ m.id }}">
-              <button type="button" class="rate-btn {{ 'selected' if m.rating == 'up' }}" data-rating="up" {{ 'disabled' if m.rating }}>&#128077;</button>
-              <button type="button" class="rate-btn {{ 'selected' if m.rating == 'down' }}" data-rating="down" {{ 'disabled' if m.rating }}>&#128078;</button>
-            </div>
-            {% endif %}
-          </div>
+    <div class="panes-row">
+      {% for pane in panes %}
+      <div class="pane" data-session-id="{{ pane.id }}">
+        <div class="pane-header">
+          <select name="model_{{ pane.id }}" class="input pane-model-select">
+            <option value="" {{ 'selected' if not pane.model }}>N/A</option>
+            {% for m in models %}
+            <option value="{{ m }}" {{ 'selected' if m == pane.model }}>{{ m }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" class="pane-toggle" onclick="togglePane(this)">&#9660; Collapse</button>
         </div>
-        {% else %}
-        <div class="text-muted">{{ 'Paste an application question to get started.' if tab == 'qa' else 'Type a message to draft the first version.' }}</div>
-        {% endfor %}
-      </div>
+        <div class="pane-body">
+          {% if pane.error %}
+          <div class="tag tag-outline pane-error">{{ pane.error }}</div>
+          {% endif %}
 
-      <form method="post" action="{{ url_for('tailor_message', job_id=job.id, tab=tab) }}" enctype="multipart/form-data" id="chat-form">
-        <div class="attach-chip" id="attach-chip">
-          <span id="attach-name"></span>
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
-            <input type="checkbox" name="save_to_profile" id="save-to-profile">
-            Save for all jobs
-          </label>
-          <button type="button" onclick="clearAttachment()">&times;</button>
-        </div>
-        <div class="chat-inputbar">
-          <label for="attachment-input" class="attach-btn" title="Attach a file">&#128206;</label>
-          <input type="file" id="attachment-input" name="attachment" accept=".pdf,.docx,.txt,.md" hidden onchange="showAttachment()">
-          <textarea name="message" id="chat-input" rows="1"
-            placeholder="{{ 'Paste an application question…' if tab == 'qa' else 'Message…' }}"></textarea>
-          <button type="submit" class="send-btn" id="send-btn" title="Send">&uarr;</button>
-        </div>
-        <div class="chat-toolbar">
-          <div style="display:flex;align-items:center;gap:8px;">
-            <select name="model" class="input" style="width:auto;min-height:28px;font-size:12px;">
-              {% for m in models %}
-              <option value="{{ m }}" {{ 'selected' if m == default_model else '' }}>{{ m }}</option>
+          {% if tab == 'qa' %}
+            <div class="pane-chat">
+              {% for m in pane.chat %}
+              <div class="msg-row {{ m.role }}">
+                <div class="msg-bubble">
+                  {{ m.rendered }}
+                  {% if m.role == 'assistant' %}
+                  <div class="msg-rating" data-message-id="{{ m.id }}">
+                    <button type="button" class="rate-btn {{ 'selected' if m.rating == 'up' }}" data-rating="up" {{ 'disabled' if m.rating }}>&#128077;</button>
+                    <button type="button" class="rate-btn {{ 'selected' if m.rating == 'down' }}" data-rating="down" {{ 'disabled' if m.rating }}>&#128078;</button>
+                  </div>
+                  {% endif %}
+                </div>
+              </div>
+              {% else %}
+              <div class="text-muted">{{ 'Paste an application question to get started.' if pane.model else 'Pick a model above to start comparing.' }}</div>
               {% endfor %}
-            </select>
-            <a href="https://openrouter.ai/models" target="_blank" rel="noopener" class="text-muted" style="font-size:12px;">Browse models &rarr;</a>
-          </div>
+            </div>
+          {% else %}
+            <div class="pane-chat">
+              {% for m in pane.chat %}
+              <div class="msg-row {{ m.role }}">
+                <div class="msg-bubble">{{ m.rendered }}</div>
+              </div>
+              {% else %}
+              <div class="text-muted">{{ 'Type a message to draft the first version.' if pane.model else 'Pick a model above to start comparing.' }}</div>
+              {% endfor %}
+            </div>
+            <div class="pane-doc-header">
+              <span class="text-muted" style="font-size:12px;">Document</span>
+              {% if pane.artifact_text %}
+              <button type="button" class="btn btn-ghost btn-small" onclick="copyText('doc-{{ pane.id }}')">Copy</button>
+              {% endif %}
+            </div>
+            {% if pane.artifact_text %}
+            <div id="doc-{{ pane.id }}" class="pane-doc">{{ pane.artifact_text }}</div>
+            <div class="msg-rating" data-message-id="{{ pane.latest_assistant_id }}">
+              <button type="button" class="rate-btn {{ 'selected' if pane.latest_assistant_rating == 'up' }}" data-rating="up" {{ 'disabled' if pane.latest_assistant_rating }}>&#128077;</button>
+              <button type="button" class="rate-btn {{ 'selected' if pane.latest_assistant_rating == 'down' }}" data-rating="down" {{ 'disabled' if pane.latest_assistant_rating }}>&#128078;</button>
+            </div>
+            {% else %}
+            <div class="text-muted">Nothing generated yet.</div>
+            {% endif %}
+          {% endif %}
         </div>
-      </form>
-    </div>
-
-    <div class="preview-col">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <h2 style="font-size:16px;margin:0;">Preview</h2>
-        {% if tab != 'qa' and artifact_text %}
-        <button type="button" class="btn btn-ghost btn-small" onclick="copyText('artifact-text')">Copy</button>
-        {% endif %}
       </div>
-      {% if tab == 'qa' %}
-        {% if qa_list %}
-        <div style="display:flex;flex-direction:column;gap:var(--space-3);">
-          {% for item in qa_list %}
-          <div style="border:1px solid var(--color-divider);padding:var(--space-3);">
-            <div style="font-weight:600;margin-bottom:6px;">{{ item.question_text }}</div>
-            <div id="qa-answer-{{ item.id }}" style="white-space:pre-line;line-height:1.6;">{{ item.content }}</div>
-            <button type="button" class="btn btn-ghost btn-small" onclick="copyText('qa-answer-{{ item.id }}')" style="margin-top:6px;">Copy</button>
-          </div>
-          {% endfor %}
-        </div>
-        {% else %}
-        <div class="text-muted">No questions answered yet.</div>
-        {% endif %}
-      {% else %}
-        {% if artifact_text %}
-        <div id="artifact-text" style="border:1px solid var(--color-divider);padding:var(--space-3);white-space:pre-line;line-height:1.6;min-height:200px;">{{ artifact_text }}</div>
-        {% else %}
-        <div class="text-muted">Nothing generated yet.</div>
-        {% endif %}
-      {% endif %}
+      {% endfor %}
     </div>
+  </form>
 
-  </div>
+  {% if can_add_pane %}
+  <form method="post" action="{{ url_for('add_chat_session', job_id=job.id, tab=tab) }}" class="add-pane-btn">
+    <button type="submit" class="btn btn-secondary">+ Add pane (compare another model)</button>
+  </form>
+  {% endif %}
 
   <dialog id="citation-dialog">
     <div class="kicker" id="citation-source"></div>
@@ -150,6 +167,12 @@
 <script>
 function copyText(id) {
   navigator.clipboard.writeText(document.getElementById(id).innerText);
+}
+
+function togglePane(btn) {
+  const pane = btn.closest('.pane');
+  pane.classList.toggle('collapsed');
+  btn.innerHTML = pane.classList.contains('collapsed') ? '&#9654; Expand' : '&#9660; Collapse';
 }
 
 function showAttachment() {
@@ -169,7 +192,6 @@ function clearAttachment() {
 
 const chatInput = document.getElementById('chat-input');
 const chatForm = document.getElementById('chat-form');
-const messagesEl = document.getElementById('chat-messages');
 
 chatInput.addEventListener('input', () => {
   chatInput.style.height = 'auto';
@@ -180,54 +202,20 @@ chatInput.addEventListener('keydown', (e) => {
     e.preventDefault();
     const hasAttachment = document.getElementById('attachment-input').files.length > 0;
     if (!chatInput.value.trim() && !hasAttachment) return;
-    chatForm.requestSubmit(); // (not .submit() - that skips the 'submit' event below)
+    chatForm.requestSubmit();
   }
 });
 
-// Instant feedback: the whole flow is a full-page POST/redirect, so there's a real gap
-// between hitting send and the new page arriving. Show the user's message and a
-// "thinking" indicator right away; the page reload that follows replaces this with
-// the real, persisted result.
+// Instant feedback: the whole flow is a full-page POST/redirect, and now fans out to every
+// active pane, so there's no single place to echo the message into ahead of time - just show
+// a shared "generating..." note and disable the send button until the reload replaces this
+// with the real, persisted result in each pane.
 chatForm.addEventListener('submit', () => {
-  const text = chatInput.value.trim();
   const hasAttachment = document.getElementById('attachment-input').files.length > 0;
-  if (!text && !hasAttachment) return;
-
-  const emptyState = messagesEl.querySelector('.text-muted');
-  if (emptyState) emptyState.remove();
-
-  if (text) {
-    const userRow = document.createElement('div');
-    userRow.className = 'msg-row user';
-    const bubble = document.createElement('div');
-    bubble.className = 'msg-bubble';
-    bubble.textContent = text;
-    userRow.appendChild(bubble);
-    messagesEl.appendChild(userRow);
-  }
-
-  const thinkingRow = document.createElement('div');
-  thinkingRow.className = 'msg-row assistant';
-  thinkingRow.innerHTML = '<div class="msg-bubble"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
-  messagesEl.appendChild(thinkingRow);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
-
-  // The entry list is built AFTER this event fires, so the real value still needs to go
-  // somewhere - stash it in a hidden field, then clear the visible textarea for instant
-  // feedback (it would otherwise sit there unchanged until the reloaded page replaces it).
-  const hiddenMessage = document.createElement('input');
-  hiddenMessage.type = 'hidden';
-  hiddenMessage.name = 'message';
-  hiddenMessage.value = text;
-  chatForm.appendChild(hiddenMessage);
-  chatInput.removeAttribute('name');
-  chatInput.value = '';
-  chatInput.style.height = 'auto';
-
+  if (!chatInput.value.trim() && !hasAttachment) return;
+  document.getElementById('sending-note').style.display = 'block';
   document.getElementById('send-btn').disabled = true;
 });
-
-messagesEl.scrollTop = messagesEl.scrollHeight;
 
 // Citations: [Source N] renders server-side as a <button class="citation" data-*>; clicking
 // it shows the actual retrieved chunk + similarity score in a native <dialog> popup.
@@ -241,15 +229,16 @@ document.addEventListener('click', (e) => {
 });
 
 // Thumbs up/down: rate in place via fetch, no page reload - disable both buttons for that
-// message on success so it reads as "already rated" immediately, matching what a reload
-// would show afterwards (rating is persisted server-side, see rate_message).
+// output on success. Used both for qa's per-answer bubbles and cover_letter/resume's
+// per-document rating (see .msg-rating in both branches above) - same message id either way.
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.rate-btn');
   if (!btn || btn.disabled) return;
   const container = btn.closest('.msg-rating');
   const messageId = container.dataset.messageId;
+  if (!messageId || messageId === 'None') return;
   const rating = btn.dataset.rating;
-  fetch(`{{ url_for('tailor_message', job_id=job.id, tab=tab) }}/${messageId}/rate`, {
+  fetch(`/messages/${messageId}/rate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ rating }),

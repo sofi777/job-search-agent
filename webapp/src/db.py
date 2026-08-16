@@ -2,12 +2,15 @@
 
 Tables: `users` (profile/onboarding answers + settings), `jobs` (every job
 posting, sample or user-added), `job_progress` (per-user, per-job
-status/comments), `chat_messages` (per-job, per-tab tailoring chat threads;
+status/comments), `chat_sessions` (one row per compare "pane" - up to 3 per
+job+tab, each with its own model and independent thread, see
+store.create_chat_session), `chat_messages` (belongs to one chat_session;
 assistant rows also carry response_time_seconds/input_tokens/output_tokens,
 the resulting artifact_text (the actual cover letter/résumé/Q&A answer as of
 that turn, not just the conversational reply), and an optional thumbs up/down
 `rating` - see store.rate_chat_message),
-`artifacts` (generated cover letters/resumes/Q&A answers), `preferences`
+`artifacts` (generated cover letters/resumes/Q&A answers, also scoped to a
+chat_session), `preferences`
 (learned writing-style preferences, one row per category: general,
 cover_letter, resume, qa), `documents` (extracted text from uploaded
 resume/cover-letter-sample/story-bank/chat-attachment files; job_id NULL means
@@ -31,6 +34,7 @@ string-built SQL).
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "app.db"
@@ -118,8 +122,18 @@ def init_db():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                model TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
                 job_id INTEGER,
                 type TEXT NOT NULL,
                 role TEXT NOT NULL,
@@ -136,6 +150,7 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS artifacts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
                 job_id INTEGER NOT NULL,
                 type TEXT NOT NULL,
                 question_text TEXT,
@@ -240,6 +255,43 @@ def init_db():
                 conn.execute(
                     "UPDATE chat_messages SET artifact_text = ? WHERE id = ?", (artifact["content"], row["id"])
                 )
+
+        # Migration: chat_sessions (multi-model compare panes) - CREATE TABLE above only
+        # covers fresh DBs; existing chat_messages/artifacts rows predate the concept.
+        for table in ("chat_messages", "artifacts"):
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN session_id INTEGER")
+            except sqlite3.OperationalError:
+                pass  # already migrated
+
+        # Backfill: every pre-existing (job_id, type) thread becomes its own Session 1 - the
+        # single shared thread that used to be the whole feature just becomes the first pane.
+        # The session's model is whatever the thread's last message actually used, so
+        # continuing that pane picks up with the same model it was already on.
+        orphan_threads = conn.execute(
+            "SELECT DISTINCT job_id, type FROM chat_messages WHERE session_id IS NULL"
+        ).fetchall()
+        for thread in orphan_threads:
+            last_model = conn.execute(
+                "SELECT model FROM chat_messages WHERE job_id = ? AND type = ? AND session_id IS NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (thread["job_id"], thread["type"]),
+            ).fetchone()["model"]
+            session_id = conn.execute(
+                "INSERT INTO chat_sessions (job_id, type, model, created_at) VALUES (?, ?, ?, ?)",
+                (thread["job_id"], thread["type"], last_model, datetime.now(timezone.utc).isoformat()),
+            ).lastrowid
+            conn.execute(
+                "UPDATE chat_messages SET session_id = ? WHERE job_id = ? AND type = ? AND session_id IS NULL",
+                (session_id, thread["job_id"], thread["type"]),
+            )
+            # qa artifacts are type='question', not 'qa' - match on chat_messages.type='qa'
+            # meaning artifacts.type='question' for that job; cover_letter/resume match directly.
+            artifact_type = "question" if thread["type"] == "qa" else thread["type"]
+            conn.execute(
+                "UPDATE artifacts SET session_id = ? WHERE job_id = ? AND type = ? AND session_id IS NULL",
+                (session_id, thread["job_id"], artifact_type),
+            )
 
 
 def _row_to_user(row):
@@ -402,41 +454,67 @@ def update_progress(user_id, job_id, **fields):
         )
 
 
+def create_chat_session(job_id, chat_type, model, created_at):
+    """One row per compare "pane" - see module docstring. model may be None (pane exists,
+    no model picked yet - rendered as N/A, no call made for it until one is chosen)."""
+    with db_transaction() as conn:
+        cur = conn.execute(
+            "INSERT INTO chat_sessions (job_id, type, model, created_at) VALUES (?, ?, ?, ?)",
+            (job_id, chat_type, model, created_at),
+        )
+        return cur.lastrowid
+
+
+def fetch_chat_sessions(job_id, chat_type):
+    """This job+tab's panes, in the order they were added (oldest/leftmost first)."""
+    with db_transaction() as conn:
+        rows = conn.execute(
+            "SELECT id, job_id, type, model, created_at FROM chat_sessions WHERE job_id = ? AND type = ? ORDER BY id",
+            (job_id, chat_type),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_chat_session(session_id):
+    with db_transaction() as conn:
+        row = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_chat_session_model(session_id, model):
+    """model may be None (pane switched to N/A - its thread is untouched, just skipped on
+    the next send until a model is picked again)."""
+    with db_transaction() as conn:
+        conn.execute("UPDATE chat_sessions SET model = ? WHERE id = ?", (model, session_id))
+
+
 _CHAT_MESSAGE_COLUMNS = (
-    "id, role, content, model, created_at, response_time_seconds, input_tokens, output_tokens, "
-    "rating, artifact_text"
+    "id, session_id, role, content, model, created_at, response_time_seconds, input_tokens, "
+    "output_tokens, rating, artifact_text"
 )
 
 
-def fetch_chat_messages(job_id, chat_type):
-    """Return this job+tab's chat thread, oldest first. job_id may be None (global thread)."""
+def fetch_chat_messages(session_id):
+    """Return this pane's chat thread, oldest first."""
     with db_transaction() as conn:
-        if job_id is None:
-            rows = conn.execute(
-                f"SELECT {_CHAT_MESSAGE_COLUMNS} FROM chat_messages "
-                "WHERE job_id IS NULL AND type = ? ORDER BY id",
-                (chat_type,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                f"SELECT {_CHAT_MESSAGE_COLUMNS} FROM chat_messages "
-                "WHERE job_id = ? AND type = ? ORDER BY id",
-                (job_id, chat_type),
-            ).fetchall()
+        rows = conn.execute(
+            f"SELECT {_CHAT_MESSAGE_COLUMNS} FROM chat_messages WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
 def add_chat_message(
-    job_id, chat_type, role, content, model, created_at,
+    session_id, job_id, chat_type, role, content, model, created_at,
     response_time_seconds=None, input_tokens=None, output_tokens=None, artifact_text=None,
 ):
     with db_transaction() as conn:
         cur = conn.execute(
             "INSERT INTO chat_messages "
-            "(job_id, type, role, content, model, created_at, response_time_seconds, input_tokens, "
-            "output_tokens, artifact_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(session_id, job_id, type, role, content, model, created_at, response_time_seconds, "
+            "input_tokens, output_tokens, artifact_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                job_id, chat_type, role, content, model, created_at,
+                session_id, job_id, chat_type, role, content, model, created_at,
                 response_time_seconds, input_tokens, output_tokens, artifact_text,
             ),
         )
@@ -451,15 +529,15 @@ def get_chat_message(message_id):
     return dict(row) if row else None
 
 
-def get_preceding_chat_message(job_id, chat_type, before_id, role):
-    """The most recent message strictly before before_id in this job+tab thread with the given
+def get_preceding_chat_message(session_id, before_id, role):
+    """The most recent message strictly before before_id in this pane's thread with the given
     role - used to find a rated assistant reply's paired user question (see store.rate_chat_message).
     """
     with db_transaction() as conn:
         row = conn.execute(
             f"SELECT {_CHAT_MESSAGE_COLUMNS} FROM chat_messages "
-            "WHERE job_id = ? AND type = ? AND role = ? AND id < ? ORDER BY id DESC LIMIT 1",
-            (job_id, chat_type, role, before_id),
+            "WHERE session_id = ? AND role = ? AND id < ? ORDER BY id DESC LIMIT 1",
+            (session_id, role, before_id),
         ).fetchone()
     return dict(row) if row else None
 
@@ -469,18 +547,16 @@ def set_chat_message_rating(message_id, rating):
         conn.execute("UPDATE chat_messages SET rating = ? WHERE id = ?", (rating, message_id))
 
 
-def get_artifact(job_id, artifact_type):
-    """Return the single cover_letter/resume artifact row for a job, or None."""
+def get_artifact(session_id):
+    """Return the single cover_letter/resume artifact row for a pane, or None."""
     with db_transaction() as conn:
-        row = conn.execute(
-            "SELECT * FROM artifacts WHERE job_id = ? AND type = ?", (job_id, artifact_type)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM artifacts WHERE session_id = ?", (session_id,)).fetchone()
     return dict(row) if row else None
 
 
-def upsert_artifact(job_id, artifact_type, content, updated_at):
-    """Insert or update the single cover_letter/resume artifact for a job, bumping version."""
-    existing = get_artifact(job_id, artifact_type)
+def upsert_artifact(session_id, job_id, artifact_type, content, updated_at):
+    """Insert or update the single cover_letter/resume artifact for a pane, bumping version."""
+    existing = get_artifact(session_id)
     with db_transaction() as conn:
         if existing:
             conn.execute(
@@ -489,25 +565,26 @@ def upsert_artifact(job_id, artifact_type, content, updated_at):
             )
         else:
             conn.execute(
-                "INSERT INTO artifacts (job_id, type, content, version, updated_at) VALUES (?, ?, ?, 1, ?)",
-                (job_id, artifact_type, content, updated_at),
+                "INSERT INTO artifacts (session_id, job_id, type, content, version, updated_at) "
+                "VALUES (?, ?, ?, ?, 1, ?)",
+                (session_id, job_id, artifact_type, content, updated_at),
             )
 
 
-def list_qa_artifacts(job_id):
+def list_qa_artifacts(session_id):
     with db_transaction() as conn:
         rows = conn.execute(
-            "SELECT * FROM artifacts WHERE job_id = ? AND type = 'question' ORDER BY id", (job_id,)
+            "SELECT * FROM artifacts WHERE session_id = ? AND type = 'question' ORDER BY id", (session_id,)
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def insert_qa_artifact(job_id, question_text, content, updated_at):
+def insert_qa_artifact(session_id, job_id, question_text, content, updated_at):
     with db_transaction() as conn:
         cur = conn.execute(
-            "INSERT INTO artifacts (job_id, type, question_text, content, version, updated_at) "
-            "VALUES (?, 'question', ?, ?, 1, ?)",
-            (job_id, question_text, content, updated_at),
+            "INSERT INTO artifacts (session_id, job_id, type, question_text, content, version, updated_at) "
+            "VALUES (?, ?, 'question', ?, ?, 1, ?)",
+            (session_id, job_id, question_text, content, updated_at),
         )
         return cur.lastrowid
 

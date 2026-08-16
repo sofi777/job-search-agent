@@ -181,18 +181,42 @@ def _seed_sample_jobs_if_needed():
         db.upsert_sample_jobs(_load_sample_catalog())
 
 
+# ---- tailoring chat sessions ("compare panes") -----------------------------
+# Each session is one independent thread + model + artifact/qa-list, up to
+# MAX_SESSIONS_PER_TAB per job+tab - see db.py's chat_sessions table docstring.
+
+MAX_SESSIONS_PER_TAB = 3
+
+
+def get_chat_sessions(job_id, chat_type):
+    """This job+tab's panes, oldest/leftmost first. Does not auto-create one if none exist -
+    that bootstrap is app.py's job (tailor()), keeping this a plain read."""
+    return db.fetch_chat_sessions(job_id, chat_type)
+
+
+def create_chat_session(job_id, chat_type, model=None):
+    if len(db.fetch_chat_sessions(job_id, chat_type)) >= MAX_SESSIONS_PER_TAB:
+        raise ValueError(f"Already at the {MAX_SESSIONS_PER_TAB}-pane limit for this tab.")
+    return db.create_chat_session(job_id, chat_type, model, _now())
+
+
+def set_session_model(session_id, model):
+    """model=None means N/A - no call is made for this pane until one is picked again."""
+    db.update_chat_session_model(session_id, model)
+
+
 # ---- tailoring chat / artifacts / preferences ----------------------------
 
-def get_chat(job_id, chat_type):
-    """Return this job+tab's chat thread as [{role, content}, ...] (no id/model/timestamp) - what
+def get_chat(session_id):
+    """Return this pane's chat thread as [{role, content}, ...] (no id/model/timestamp) - what
     the model sees. For rendering (which needs message ids to look up citations), see get_chat_for_display.
     """
-    return [{"role": m["role"], "content": m["content"]} for m in db.fetch_chat_messages(job_id, chat_type)]
+    return [{"role": m["role"], "content": m["content"]} for m in db.fetch_chat_messages(session_id)]
 
 
-def get_chat_for_display(job_id, chat_type):
+def get_chat_for_display(session_id):
     """Full chat rows (with id) plus each assistant message's citations, for rendering."""
-    messages = db.fetch_chat_messages(job_id, chat_type)
+    messages = db.fetch_chat_messages(session_id)
     citations = db.fetch_citations_for_messages([m["id"] for m in messages])
     for m in messages:
         m["citations"] = citations.get(m["id"], [])
@@ -200,17 +224,18 @@ def get_chat_for_display(job_id, chat_type):
 
 
 def add_chat_message(
-    job_id, chat_type, role, content, model=None,
+    session_id, job_id, chat_type, role, content, model=None,
     response_time_seconds=None, input_tokens=None, output_tokens=None, artifact_text=None,
 ):
     return db.add_chat_message(
-        job_id, chat_type, role, content, model, _now(),
+        session_id, job_id, chat_type, role, content, model, _now(),
         response_time_seconds, input_tokens, output_tokens, artifact_text,
     )
 
 
-def rate_chat_message(job_id, chat_type, message_id, rating):
-    """Record a thumbs up/down on one assistant chat response.
+def rate_chat_message(message_id, rating):
+    """Record a thumbs up/down on one assistant chat response (per-pane now - see
+    get_chat_sessions - rather than per job+tab).
 
     Persists to chat_messages.rating (so the buttons show as already-rated after a reload)
     and appends a full record - question, response, the resulting artifact (cover letter/
@@ -219,24 +244,26 @@ def rate_chat_message(job_id, chat_type, message_id, rating):
     it already has a rating, this is a no-op (the UI disables both buttons after the first
     click, so this only matters against a direct API call) - it never overwrites the DB
     rating or duplicates the results.json entry out of sync with each other. Raises
-    ValueError if message_id doesn't belong to this job+tab or isn't an assistant reply.
+    ValueError if message_id doesn't exist or isn't an assistant reply.
     """
     message = db.get_chat_message(message_id)
-    if message is None or message["job_id"] != job_id or message["type"] != chat_type or message["role"] != "assistant":
-        raise ValueError("Message not found for this job/tab.")
+    if message is None or message["role"] != "assistant":
+        raise ValueError("Message not found.")
     if message["rating"]:
         return
 
     db.set_chat_message_rating(message_id, rating)
 
-    question = db.get_preceding_chat_message(job_id, chat_type, message_id, "user")
-    job = get_job(job_id)
+    question = db.get_preceding_chat_message(message["session_id"], message_id, "user")
+    chat_session = db.get_chat_session(message["session_id"])
+    job = get_job(chat_session["job_id"]) if chat_session else None
     _append_result({
         "id": message_id,
-        "job_id": job_id,
+        "session_id": message["session_id"],
+        "job_id": chat_session["job_id"] if chat_session else None,
         "job_company": job["company"] if job else "",
         "job_title": job["title"] if job else "",
-        "tab": chat_type,
+        "tab": chat_session["type"] if chat_session else "",
         "question": question["content"] if question else "",
         "response": message["content"],
         # None (not "") means this message predates artifact_text tracking - see db.py's
@@ -292,22 +319,53 @@ def results_stats(results):
     }
 
 
-def get_artifact_text(job_id, artifact_type):
-    """Current cover_letter/resume draft text, or '' if none yet."""
-    artifact = db.get_artifact(job_id, artifact_type)
+USAGE_FILE = DATA_DIR / "usage.json"
+
+
+def load_usage():
+    """Every logged LLM call - see src/agents.py's _log_usage, the only writer of this file."""
+    if not USAGE_FILE.exists():
+        return []
+    try:
+        return json.loads(USAGE_FILE.read_text())
+    except json.JSONDecodeError:
+        return []
+
+
+def usage_stats(usage):
+    """{"total_calls", "total_tokens", "total_cost_usd", "by_model": {model: {calls, tokens, cost_usd}}}."""
+    by_model = {}
+    for u in usage:
+        m = by_model.setdefault(u["model"], {"calls": 0, "tokens": 0, "cost_usd": 0.0})
+        m["calls"] += 1
+        m["tokens"] += u.get("total_tokens", 0)
+        m["cost_usd"] += u.get("estimated_cost_usd", 0)
+    for m in by_model.values():
+        m["cost_usd"] = round(m["cost_usd"], 4)
+    return {
+        "total_calls": len(usage),
+        "total_tokens": sum(u.get("total_tokens", 0) for u in usage),
+        "total_cost_usd": round(sum(u.get("estimated_cost_usd", 0) for u in usage), 4),
+        "by_model": by_model,
+    }
+
+
+def get_artifact_text(session_id):
+    """This pane's current cover_letter/resume draft text, or '' if none yet."""
+    artifact = db.get_artifact(session_id)
     return artifact["content"] if artifact else ""
 
 
-def save_artifact(job_id, artifact_type, content):
-    db.upsert_artifact(job_id, artifact_type, content, _now())
+def save_artifact(session_id, job_id, artifact_type, content):
+    db.upsert_artifact(session_id, job_id, artifact_type, content, _now())
 
 
-def get_qa_list(job_id):
-    return db.list_qa_artifacts(job_id)
+def get_qa_list(session_id):
+    return db.list_qa_artifacts(session_id)
 
 
-def add_qa(job_id, question, answer):
-    return db.insert_qa_artifact(job_id, question, answer, _now())
+def add_qa(session_id, job_id, question, answer):
+    return db.insert_qa_artifact(session_id, job_id, question, answer, _now())
 
 
 def update_qa(qa_id, answer):

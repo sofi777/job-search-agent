@@ -1,5 +1,6 @@
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import wraps
 
 from flask import Flask, redirect, render_template, request, session, url_for
@@ -411,8 +412,8 @@ TAB_LABELS = {"cover_letter": "Cover Letter", "resume": "Resume", "qa": "Q&A"}
 _CITATION_RE = re.compile(r"\[Source (\d+)\]")
 
 
-def _qa_context_text(job_id):
-    items = store.get_qa_list(job_id)
+def _qa_context_text(session_id):
+    items = store.get_qa_list(session_id)
     if not items:
         return ""
     return "\n\n".join(f"Q: {i['question_text']}\nA: {i['content']}" for i in items)
@@ -453,80 +454,82 @@ def tailor(job_id):
     if tab not in store.TAILOR_TYPES:
         return redirect(url_for("tailor", job_id=job_id))
 
-    chat = store.get_chat_for_display(job_id, tab)
-    for m in chat:
-        m["rendered"] = _render_chat_content(m["content"], m["citations"])
+    chat_sessions = store.get_chat_sessions(job_id, tab)
+    if not chat_sessions:
+        # First visit to this job+tab: bootstrap with one pane preselected to the default
+        # model, so the first-time experience matches what a single dropdown used to do -
+        # an empty "no panes yet, click +" state would be a confusing way to start.
+        store.create_chat_session(job_id, tab, agents.DEFAULT_MODEL)
+        chat_sessions = store.get_chat_sessions(job_id, tab)
+
+    errors = session.pop("tailor_errors", {})
+    panes = []
+    for chat_session in chat_sessions:
+        chat = store.get_chat_for_display(chat_session["id"])
+        for m in chat:
+            m["rendered"] = _render_chat_content(m["content"], m["citations"])
+        # The rate buttons for cover_letter/resume sit under the document, not under each
+        # bubble - they always rate whichever turn most recently produced it.
+        latest_assistant = next((m for m in reversed(chat) if m["role"] == "assistant"), None)
+        panes.append({
+            "id": chat_session["id"],
+            "model": chat_session["model"],
+            "chat": chat,
+            "artifact_text": store.get_artifact_text(chat_session["id"]) if tab != "qa" else None,
+            "qa_list": store.get_qa_list(chat_session["id"]) if tab == "qa" else None,
+            "latest_assistant_id": latest_assistant["id"] if latest_assistant else None,
+            "latest_assistant_rating": latest_assistant["rating"] if latest_assistant else None,
+            "error": errors.get(str(chat_session["id"])),
+        })
 
     return render_template(
         "tailor.html",
         job=job,
         tab=tab,
         tab_labels=TAB_LABELS,
-        chat=chat,
-        artifact_text=store.get_artifact_text(job_id, tab) if tab != "qa" else None,
-        qa_list=store.get_qa_list(job_id) if tab == "qa" else None,
+        panes=panes,
+        can_add_pane=len(panes) < store.MAX_SESSIONS_PER_TAB,
         models=agents.MODEL_OPTIONS,
-        default_model=agents.DEFAULT_MODEL,
-        error=session.pop("tailor_error", None),
     )
 
 
-@app.route("/jobs/<int:job_id>/tailor/<tab>/message", methods=["POST"])
+@app.route("/jobs/<int:job_id>/tailor/<tab>/sessions", methods=["POST"])
 @login_required
-def tailor_message(job_id, tab):
+def add_chat_session(job_id, tab):
     if tab not in store.TAILOR_TYPES:
         return redirect(url_for("tailor", job_id=job_id))
-    job = store.get_job(job_id)
-    if job is None:
-        return redirect(url_for("dashboard"))
-
-    message = request.form.get("message", "").strip()
-    model = request.form.get("model") or agents.DEFAULT_MODEL
-    attachment = request.files.get("attachment")
-    save_to_profile = bool(request.form.get("save_to_profile"))
-
-    if not message and not (attachment and attachment.filename):
-        return redirect(url_for("tailor", job_id=job_id, tab=tab))
-
     try:
-        # display_message is what's shown in the chat and persisted to history: a short marker
-        # for the attachment, not its full text. The full text is persisted+chunked+embedded
-        # separately (store.save_chat_attachment) and reaches the model only via retrieval on
-        # whichever future turns actually match it - not smuggled into chat history, which would
-        # otherwise resend the whole document on every later message in this thread.
-        display_message = message
-        if attachment and attachment.filename:
-            attachment_text = files.extract_text(attachment)
-            store.save_chat_attachment(job_id, attachment.filename, attachment_text, save_to_profile)
-            display_message = f"\U0001F4CE {attachment.filename}\n{message}".strip()
+        store.create_chat_session(job_id, tab)
+    except ValueError:
+        pass  # already at the pane limit - the "+" button is hidden by then anyway
+    return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
-        history = agents.trim_history(store.get_chat(job_id, tab))
-        preferences = store.get_preferences()
 
-        # Saved now, before any of the LLM calls below that could fail (rate limit, JSON parse
-        # error, etc.) - so the user's message is never lost if something downstream breaks.
-        # It'll show in the chat with no assistant reply after it and the error banner above,
-        # rather than silently vanishing and forcing a retype. history was already fetched
-        # above, so this doesn't duplicate into what gets sent to the model this turn.
-        store.add_chat_message(job_id, tab, "user", display_message, model)
+def _run_pane_turn(chat_session, job, display_message, preferences):
+    """Run one full turn (classify -> retrieve -> generate -> persist) for one pane's own
+    thread. Returns None on success or an error message string on failure - a RuntimeError in
+    one pane (rate limit, JSON parse failure, ...) must not take down the others, since they
+    run concurrently and independently (see tailor_message).
+    """
+    session_id, model, tab = chat_session["id"], chat_session["model"], chat_session["type"]
+    try:
+        history = agents.trim_history(store.get_chat(session_id))
 
-        if tab == "qa":
-            current_text = _qa_context_text(job_id)
-        else:
-            current_text = store.get_artifact_text(job_id, tab)
+        # Saved now, before any of the LLM calls below that could fail - so the user's message
+        # is never lost from this pane's thread if something downstream breaks. history was
+        # already fetched above, so this doesn't duplicate into what gets sent to the model.
+        store.add_chat_message(session_id, job["id"], tab, "user", display_message, model)
+
+        current_text = _qa_context_text(session_id) if tab == "qa" else store.get_artifact_text(session_id)
 
         # One free-tier classification call covers both "does this need fresh retrieval" and
-        # "could this reveal a durable preference" - word count can't answer either reliably
-        # (a short qa message can be a brand-new question or pure feedback on the last answer,
-        # and length alone can't tell which) - see classify_turn.
+        # "could this reveal a durable preference" - see agents.classify_turn.
         classification = agents.classify_turn(tab, display_message, bool(current_text))
-        # First message for this tab never has a preference to reveal - nothing to give
-        # feedback ON yet - regardless of what the classifier says.
         check_preferences = bool(current_text) and classification["reveals_preference"]
 
         if classification["needs_retrieval"]:
             retrieval_query = agents.build_retrieval_query(job, display_message)
-            retrieved_chunks = store.retrieve_context(job_id, retrieval_query, top_k=3)
+            retrieved_chunks = store.retrieve_context(job["id"], retrieval_query, top_k=3)
             retrieved_context = agents.format_retrieved_context(retrieved_chunks)
         else:
             retrieved_chunks = []
@@ -539,16 +542,12 @@ def tailor_message(job_id, tab):
         response_time_seconds = time.monotonic() - turn_started
 
         # The resulting document as of this turn - the actual cover letter/résumé/Q&A answer,
-        # not the conversational reply above. Computed before add_chat_message so it can be
-        # stored alongside it (see chat_messages.artifact_text) for the Results tab and for
-        # revise_preferences below, rather than recomputed from result twice.
-        if tab == "qa":
-            artifact_text = result.get("answer", "")
-        else:
-            artifact_text = result.get("artifact") or current_text
+        # not the conversational reply. Computed before add_chat_message so it can be stored
+        # alongside it (chat_messages.artifact_text) and reused for revise_preferences below.
+        artifact_text = result.get("answer", "") if tab == "qa" else (result.get("artifact") or current_text)
 
         assistant_message_id = store.add_chat_message(
-            job_id, tab, "assistant", result.get("reply", ""), used_model,
+            session_id, job["id"], tab, "assistant", result.get("reply", ""), used_model,
             response_time_seconds=response_time_seconds,
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
@@ -557,32 +556,98 @@ def tailor_message(job_id, tab):
         store.save_citations(assistant_message_id, retrieved_chunks)
 
         if tab == "qa":
-            qa_list = store.get_qa_list(job_id)
+            qa_list = store.get_qa_list(session_id)
             if result.get("action") == "new_question" and result.get("question"):
-                store.add_qa(job_id, result["question"], result.get("answer", ""))
+                store.add_qa(session_id, job["id"], result["question"], result.get("answer", ""))
             elif qa_list:
                 store.update_qa(qa_list[-1]["id"], result.get("answer", ""))
         elif result.get("artifact"):
-            store.save_artifact(job_id, tab, result["artifact"])
+            store.save_artifact(session_id, job["id"], tab, result["artifact"])
 
+        # Preferences stay global/shared across every pane on purpose - feedback given to one
+        # model should improve every model's output, not just that pane's.
         if check_preferences:
             revision = agents.revise_preferences(tab, display_message, artifact_text, preferences, model)
             if revision:
                 store.save_preference(revision["category"], revision["text"])
+        return None
     except RuntimeError as e:
-        session["tailor_error"] = str(e)
+        return str(e)
+
+
+@app.route("/jobs/<int:job_id>/tailor/<tab>/message", methods=["POST"])
+@login_required
+def tailor_message(job_id, tab):
+    if tab not in store.TAILOR_TYPES:
+        return redirect(url_for("tailor", job_id=job_id))
+    job = store.get_job(job_id)
+    if job is None:
+        return redirect(url_for("dashboard"))
+
+    message = request.form.get("message", "").strip()
+    attachment = request.files.get("attachment")
+    save_to_profile = bool(request.form.get("save_to_profile"))
+
+    if not message and not (attachment and attachment.filename):
+        return redirect(url_for("tailor", job_id=job_id, tab=tab))
+
+    # display_message is what's shown in the chat and persisted to history: a short marker for
+    # the attachment, not its full text. The full text is persisted+chunked+embedded separately
+    # (store.save_chat_attachment, shared across every pane) and reaches a model only via
+    # retrieval on whichever future turns actually match it.
+    display_message = message
+    if attachment and attachment.filename:
+        try:
+            attachment_text = files.extract_text(attachment)
+            store.save_chat_attachment(job_id, attachment.filename, attachment_text, save_to_profile)
+            display_message = f"\U0001F4CE {attachment.filename}\n{message}".strip()
+        except RuntimeError as e:
+            session["tailor_errors"] = {"_attachment": str(e)}
+            return redirect(url_for("tailor", job_id=job_id, tab=tab))
+
+    chat_sessions = store.get_chat_sessions(job_id, tab)
+    preferences = store.get_preferences()
+
+    # Each pane's dropdown may have changed since it was last rendered - sync the stored
+    # selection to match, and collect the panes that aren't N/A into this turn's active set.
+    active_sessions = []
+    for chat_session in chat_sessions:
+        submitted_model = request.form.get(f"model_{chat_session['id']}") or None
+        if submitted_model != chat_session["model"]:
+            store.set_session_model(chat_session["id"], submitted_model)
+            chat_session["model"] = submitted_model
+        if submitted_model:
+            active_sessions.append(chat_session)
+
+    # Run every active pane's turn concurrently ("at the same time") rather than one after
+    # another - each is an independent, several-second-plus LLM call, so sequential would mean
+    # waiting up to 3x as long for no benefit (the panes don't depend on each other's output).
+    errors = {}
+    if active_sessions:
+        with ThreadPoolExecutor(max_workers=len(active_sessions)) as executor:
+            futures = {
+                executor.submit(_run_pane_turn, cs, job, display_message, preferences): cs["id"]
+                for cs in active_sessions
+            }
+            for future in as_completed(futures):
+                error = future.result()
+                if error:
+                    errors[str(futures[future])] = error
+
+    if errors:
+        session["tailor_errors"] = errors
 
     return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
 
-@app.route("/jobs/<int:job_id>/tailor/<tab>/message/<int:message_id>/rate", methods=["POST"])
+@app.route("/messages/<int:message_id>/rate", methods=["POST"])
 @login_required
-def rate_message(job_id, tab, message_id):
+def rate_message(message_id):
     rating = (request.get_json(silent=True) or {}).get("rating")
     if rating not in ("up", "down"):
         return {"error": "rating must be 'up' or 'down'"}, 400
     try:
-        store.rate_chat_message(job_id, tab, message_id, rating)
+        store.rate_chat_message(message_id, rating)
     except ValueError as e:
         return {"error": str(e)}, 404
     return {"ok": True}
@@ -635,6 +700,15 @@ def chunks():
 def results():
     rows = list(reversed(store.load_results()))
     return render_template("results.html", results=rows, stats=store.results_stats(rows))
+
+
+# ---- usage (LLM call tracking - see src/agents.py _log_usage) --------------
+
+@app.route("/usage")
+@login_required
+def usage():
+    rows = list(reversed(store.load_usage()))
+    return render_template("usage.html", usage=rows, stats=store.usage_stats(rows))
 
 
 if __name__ == "__main__":

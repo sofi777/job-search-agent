@@ -45,6 +45,7 @@ generous candidate set and filtering in Python is simpler and more robust than g
 Chroma metadata filter syntax exactly right for a nullable field.
 """
 import re
+import threading
 from pathlib import Path
 
 from . import db
@@ -56,23 +57,32 @@ CANDIDATE_POOL = 20  # how many nearest neighbors to pull from Chroma before job
 
 _embedder = None
 _collection = None
+# Multi-model compare panes (see app.py's tailor_message) run their turns concurrently in
+# threads, and both sentence-transformers and chromadb's client construction have been seen to
+# crash (not just race) when two threads first initialize them at the same instant - lock
+# around the lazy-init, not every call, so steady-state reads stay uncontended.
+_init_lock = threading.Lock()
 
 
 def _get_embedder():
     global _embedder
     if _embedder is None:
-        from sentence_transformers import SentenceTransformer
-        _embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        with _init_lock:
+            if _embedder is None:
+                from sentence_transformers import SentenceTransformer
+                _embedder = SentenceTransformer(EMBEDDING_MODEL_NAME)
     return _embedder
 
 
 def _get_collection():
     global _collection
     if _collection is None:
-        import chromadb
-        CHROMA_PATH.mkdir(parents=True, exist_ok=True)
-        client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-        _collection = client.get_or_create_collection("knowledge_base", metadata={"hnsw:space": "cosine"})
+        with _init_lock:
+            if _collection is None:
+                import chromadb
+                CHROMA_PATH.mkdir(parents=True, exist_ok=True)
+                client = chromadb.PersistentClient(path=str(CHROMA_PATH))
+                _collection = client.get_or_create_collection("knowledge_base", metadata={"hnsw:space": "cosine"})
     return _collection
 
 

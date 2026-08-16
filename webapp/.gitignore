@@ -23,6 +23,9 @@ data/app.db
 # Rated chatbot responses (see src/store.py rate_chat_message) - user data, not sample data
 data/results.json
 
+# LLM call usage log (see src/agents.py _log_usage) - user data, not sample data
+data/usage.json
+
 # Chroma vector store (RAG chunk embeddings, rebuilt from data/app.db's documents table)
 data/chroma/
 

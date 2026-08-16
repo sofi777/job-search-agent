@@ -77,12 +77,18 @@ webapp/
   status dropdown on every dashboard row
 - **Comments**: free-text notes per job, saved inline
 - **Tailor my application** (`/jobs/<id>/tailor`): one page per job with three tabs -
-  Cover Letter, Resume, Q&A - each its own persistent chat thread and generated
-  artifact. Quick-generate buttons for the first draft; after that, any chat message
-  is feedback that updates the artifact in place. Q&A has no button - paste a
-  question directly in chat; the model decides (from context) whether it's a new
-  question or feedback on the last answer. Model is selectable per message from a
-  dropdown (free + paid OpenRouter options), with a link to browse the full catalog.
+  Cover Letter, Resume, Q&A. Each tab holds up to 3 independent compare "panes" (a
+  `chat_sessions` row - see Persistence below), so you can generate the same message
+  from up to 3 models side by side and compare. Each pane has its own model dropdown
+  (or N/A - no call is made for that pane this turn), its own thread, and its own
+  generated document (cover letter/résumé) or, for Q&A, its answers shown inline in
+  that pane's own chat rather than a separate document box. "+ Add pane" adds one, up
+  to the 3-pane cap. One shared message box sends the same message to every pane that
+  has a model selected, concurrently (not one-by-one) - each pane's turn (retrieval,
+  generation, rate-limit fallback) runs independently, so one pane failing (e.g. a
+  JSON-parse hiccup) doesn't block the others. Writing-style preferences stay global
+  across every pane and model - feedback in one pane improves every future generation,
+  regardless of which model produced the feedback or which model generates next.
 - **Knowledge base chunks** (`/chunks`): every chunk the uploaded documents were split
   into, grouped by source file, with token counts. A chunk-size field + "Re-run
   chunking" button re-chunks and re-embeds the entire knowledge base at a new size.
@@ -106,15 +112,25 @@ webapp/
   reports that clearly instead of adding a garbage entry. Sites with an
   interactive bot challenge (e.g. Cloudflare, some Indeed pages) aren't
   fetchable at all without a real browser, which this app doesn't run.
-- **Response ratings** (thumbs up/down): every assistant reply in the tailoring chat
-  gets a 👍/👎 under it. Rating is one-shot (both buttons disable immediately via a
-  fetch call, and stay disabled after a reload - the rating is persisted on the
-  message). Each rated response - question, response text, model actually used
-  (not just requested; see below), timestamp, response time, and input/output token
-  counts - is appended to `data/results.json`.
+- **Response ratings** (thumbs up/down): Q&A rates each answer inline in its pane's
+  chat; cover letter/résumé panes rate the document itself (under the document box,
+  not each chat bubble - see Tailor my application above). Rating is one-shot (both
+  buttons disable immediately via a fetch call, and stay disabled after a reload -
+  the rating is persisted on the message). Each rated response - question, response
+  text, the resulting document, model actually used (not just requested; see below),
+  timestamp, response time, and input/output token counts - is appended to
+  `data/results.json`.
 - **Results** (`/results`): every rated response as a row (rating icon, model badge,
-  input, output); click a row for the full record in a dialog. Top of the page shows
-  overall and per-model rated counts and % positive.
+  input, output, and a "Generated document" column - fixed-height, scrollable, full
+  text on hover, with a link back to that response's pane); click a row for the full
+  record in a dialog. Top of the page shows overall and per-model rated counts and %
+  positive.
+- **Usage** (`/usage`): every LLM call (not just rated ones) logged to
+  `data/usage.json` - timestamp, model, provider, prompt/completion/total tokens,
+  estimated cost. Logged once, centrally, in `src/agents.py`'s `send_chat` (the only
+  function that talks to an LLM), so every caller (tailoring chat, classification,
+  preference learning, job extraction) is covered automatically. Top of the page
+  shows total and per-model cost/token/call counts.
 
 ## What's a placeholder (by design)
 
@@ -150,14 +166,35 @@ naming the model and suggesting a different one from the dropdown.
 
 **Tailoring chat**: `run_tailor_turn()` builds a system prompt per turn from
 `src/prompts/<type>.txt` (job + profile + preferences + current draft/answers),
-sends the job's chat history plus the new message, and parses a structured JSON
-reply (`{reply, artifact}` for cover_letter/resume; `{reply, action, question,
+sends one pane's own chat history plus the new message, and parses a structured
+JSON reply (`{reply, artifact}` for cover_letter/resume; `{reply, action, question,
 answer}` for qa - the model decides new-question vs. feedback from context, no
-manual toggle needed). `app.py` persists the chat turn and artifact via `store.py`.
-The user's message is saved to the chat immediately, before any of the LLM calls
-that could fail - if one does (rate limit, JSON parse error), the message stays
-visible in the chat with the error shown above it, instead of silently vanishing
-and forcing a retype.
+manual toggle needed). `app.py`'s `_run_pane_turn()` persists the chat turn and
+artifact via `store.py`, once per active pane. The user's message is saved to that
+pane's chat immediately, before any of the LLM calls that could fail - if one does
+(rate limit, JSON parse error), the message stays visible with the error shown in
+that pane, instead of silently vanishing and forcing a retype - and other panes
+aren't affected, since each pane's turn runs independently (see Compare panes
+below).
+
+**Compare panes**: `chat_sessions` (`src/db.py`) is one row per pane - job, tab,
+model, own thread, own artifact/Q&A list. `tailor_message()` reads every active
+pane's submitted model from the form (`model_<session_id>`, `""` meaning N/A - no
+call for that pane this turn), syncs `chat_sessions.model` if it changed, then runs
+`_run_pane_turn()` for each active one inside a `ThreadPoolExecutor` - concurrently,
+not one after another, since the panes don't depend on each other and a several-
+second-plus LLM call each would otherwise mean waiting up to 3x as long for no
+reason. A `RuntimeError` in one pane's turn is caught inside `_run_pane_turn()` and
+shown as that pane's own error (`session["tailor_errors"]`, keyed by session id) -
+it never aborts the others. `src/rag.py`'s lazily-initialized embedder/Chroma client
+are guarded by a lock (`_init_lock`) for this reason too: two panes both hitting a
+cold start at once previously crashed chromadb's client construction outright, not
+just raced it. Writing-style preferences (`revise_preferences`, below) are fetched
+once per turn and passed to every pane - deliberately not scoped per pane, so
+feedback in any one pane's chat improves every pane's future output. Existing job
+data from before this feature predates `chat_sessions`; `src/db.py`'s migration
+backfills one session per pre-existing (job, tab) thread, using whatever model that
+thread's last message actually used, so it picks up as that pane's Session 1.
 
 **Cross-job preference learning**: `revise_preferences()` makes a second, separate
 call asking whether a turn's feedback revealed a durable style preference (vs. being
@@ -192,7 +229,7 @@ correctness, it just costs a bit more).
   exchanges) - the current draft/Q&A list already carries the full up-to-date state
   into every prompt, so older exchanges are mostly redundant for continuing edits.
 - For `anthropic/*` models, the system prompt is split into a stable prefix
-  (instructions/job/profile - identical across every turn of one job+tab thread) and
+  (instructions/job/profile - identical across every turn of one pane's thread) and
   a per-turn dynamic suffix (current draft + this turn's retrieved context), with the
   prefix marked via `cache_control` for Anthropic's prompt caching (`_build_system_content`)
   - OpenRouter passes this through, discounting repeat input tokens ~90% within the
@@ -238,6 +275,11 @@ Free-tier model slugs on OpenRouter change over time; if `DEFAULT_MODEL` starts
 returning a 404, check the current list at
 `curl -s https://openrouter.ai/api/v1/models | grep ':free'`.
 
+**Usage tracking**: `MODEL_PRICING` in `src/agents.py` holds rough public per-1M-token
+USD pricing (free models are $0); OpenRouter doesn't return actual cost in the
+response, so `estimated_cost_usd` is an estimate, not a bill. Unlisted models default
+to $0 rather than guessing. Update `MODEL_PRICING` alongside `MODEL_OPTIONS`.
+
 Setup:
 1. Get an API key at https://openrouter.ai/keys
 2. Copy `.env.example` to `.env` and set `OPENROUTER_API_KEY`
@@ -257,9 +299,11 @@ message or onboarding upload needs internet access beyond just OpenRouter.
 ## Persistence
 
 User profile/settings, every job posting, per-job progress (status, comments),
-tailoring chat history + citations, generated artifacts (cover letters/résumés/Q&A
-answers), writing preferences, uploaded-document text, its chunks, and small app
-settings (currently just chunk size) all persist in `data/app.db` (SQLite, via
+compare panes (`chat_sessions` - job, tab, model, one per pane) with their chat
+history + citations, generated artifacts (cover letters/résumés/Q&A answers, each
+scoped to its pane via `session_id`), writing preferences, uploaded-document text,
+its chunks, and small app settings (currently just chunk size) all persist in
+`data/app.db` (SQLite, via
 Python's built-in `sqlite3`) - chunk *embeddings* are the one thing that live outside
 it, in Chroma at `data/chroma/`. `src/db.py` creates the schema automatically on
 first run and is the only module that writes SQL: every write runs in its own

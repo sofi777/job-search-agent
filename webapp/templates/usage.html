@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Usage - Dream Job Landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<style>
+  .stat-card { border: 1px solid var(--color-divider); padding: var(--space-3); min-width: 170px; }
+  .stat-card .pct { font-size: 22px; font-weight: 700; }
+  .ellipsis { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+
+<div class="container">
+  <h1>Usage</h1>
+  <p class="text-muted">Every LLM call made through <code>src/agents.py</code>'s <code>send_chat</code>, with token counts and an estimated cost.</p>
+
+  <div style="display:flex;gap:var(--space-3);flex-wrap:wrap;margin:var(--space-4) 0;">
+    <div class="stat-card">
+      <div class="text-muted" style="margin-bottom:4px;">Total</div>
+      <div class="pct">${{ '%.4f' | format(stats.total_cost_usd) }}</div>
+      <div class="text-muted" style="font-size:12px;margin-top:4px;">{{ stats.total_calls }} calls &middot; {{ stats.total_tokens }} tokens</div>
+    </div>
+    {% for model, m in stats.by_model.items() %}
+    <div class="stat-card">
+      <div class="text-muted" style="margin-bottom:4px;">{{ model }}</div>
+      <div class="pct">${{ '%.4f' | format(m.cost_usd) }}</div>
+      <div class="text-muted" style="font-size:12px;margin-top:4px;">{{ m.calls }} calls &middot; {{ m.tokens }} tokens</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="hr"></div>
+
+  {% if not usage %}
+  <div class="text-muted" style="padding:var(--space-6) 0;">No LLM calls logged yet.</div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr><th>Time</th><th>Model</th><th>Provider</th><th>Input</th><th>Output</th><th>Total</th><th>Est. cost</th></tr>
+      </thead>
+      <tbody>
+        {% for u in usage %}
+        <tr>
+          <td class="ellipsis">{{ u.timestamp }}</td>
+          <td><span class="tag tag-neutral">{{ u.model }}</span></td>
+          <td>{{ u.provider }}</td>
+          <td>{{ u.prompt_tokens }}</td>
+          <td>{{ u.completion_tokens }}</td>
+          <td>{{ u.total_tokens }}</td>
+          <td>${{ '%.6f' | format(u.estimated_cost_usd) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

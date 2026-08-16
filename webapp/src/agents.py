@@ -12,6 +12,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -114,6 +115,19 @@ def _post(messages, model, api_key):
 
 
 LAST_CALL_LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "last_llm_call.json"
+USAGE_LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "usage.json"
+
+# Rough public per-1M-token USD pricing (input, output) for cost estimates - OpenRouter
+# doesn't return actual cost in the response. Free models are $0. Unlisted models fall back
+# to DEFAULT_PRICING rather than guessing. Update alongside MODEL_OPTIONS.
+MODEL_PRICING = {
+    "google/gemma-4-26b-a4b-it:free": (0, 0),
+    "openai/gpt-oss-20b:free": (0, 0),
+    "nvidia/nemotron-3-super-120b-a12b:free": (0, 0),
+    "openai/gpt-4o-mini": (0.15, 0.60),
+    "anthropic/claude-sonnet-5": (3.00, 15.00),
+}
+DEFAULT_PRICING = (0, 0)
 
 
 def _log_last_call(messages, model, response_data):
@@ -130,6 +144,39 @@ def _log_last_call(messages, model, response_data):
         }, indent=2))
     except OSError:
         pass  # debug aid only, never let logging break a real request
+
+
+def _estimate_cost(model, usage):
+    input_price, output_price = MODEL_PRICING.get(model, DEFAULT_PRICING)
+    return round(
+        usage.get("prompt_tokens", 0) / 1_000_000 * input_price
+        + usage.get("completion_tokens", 0) / 1_000_000 * output_price,
+        6,
+    )
+
+
+def _log_usage(model, usage):
+    """Append one entry to data/usage.json for every real LLM call - see CLAUDE.md's LLM
+    usage tracking rule. send_chat is the single choke point every caller in this app goes
+    through, so this is the only place usage ever gets logged."""
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "provider": model.split("/", 1)[0] if "/" in model else "unknown",
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+        "estimated_cost_usd": _estimate_cost(model, usage),
+    }
+    try:
+        log = json.loads(USAGE_LOG_PATH.read_text()) if USAGE_LOG_PATH.exists() else []
+    except json.JSONDecodeError:
+        log = []
+    log.append(entry)
+    try:
+        USAGE_LOG_PATH.write_text(json.dumps(log, indent=2))
+    except OSError:
+        pass  # never let usage tracking break a real request
 
 
 def _post_with_backoff(messages, model, api_key):
@@ -183,6 +230,7 @@ def send_chat(messages, model=DEFAULT_MODEL):
         raise RuntimeError(_format_error(last_error.code, last_error.read().decode())) from last_error
 
     _log_last_call(messages, used_model, data)
+    _log_usage(used_model, data.get("usage") or {})
 
     choice = data["choices"][0]
     content = choice["message"]["content"]
