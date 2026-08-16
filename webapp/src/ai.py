@@ -149,7 +149,7 @@ def extract_job_posting(url):
         "plain-text summary of the role).\n\n"
         f"Page text:\n{text}"
     )
-    reply, _used_model = agents.send_message(prompt)
+    reply, _used_model, _usage = agents.send_message(prompt)
     try:
         data = json.loads(agents.strip_json_fence(reply))
     except json.JSONDecodeError as e:

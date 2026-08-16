@@ -1,4 +1,5 @@
 import re
+import time
 from functools import wraps
 
 from flask import Flask, redirect, render_template, request, session, url_for
@@ -531,11 +532,28 @@ def tailor_message(job_id, tab):
             retrieved_chunks = []
             retrieved_context = "(not re-searched this turn - existing content covers this; rely on what's already here.)"
 
-        result = agents.run_tailor_turn(
+        turn_started = time.monotonic()
+        result, used_model, usage = agents.run_tailor_turn(
             tab, job, store.profile, preferences, history, current_text, display_message, model, retrieved_context
         )
+        response_time_seconds = time.monotonic() - turn_started
 
-        assistant_message_id = store.add_chat_message(job_id, tab, "assistant", result.get("reply", ""), model)
+        # The resulting document as of this turn - the actual cover letter/résumé/Q&A answer,
+        # not the conversational reply above. Computed before add_chat_message so it can be
+        # stored alongside it (see chat_messages.artifact_text) for the Results tab and for
+        # revise_preferences below, rather than recomputed from result twice.
+        if tab == "qa":
+            artifact_text = result.get("answer", "")
+        else:
+            artifact_text = result.get("artifact") or current_text
+
+        assistant_message_id = store.add_chat_message(
+            job_id, tab, "assistant", result.get("reply", ""), used_model,
+            response_time_seconds=response_time_seconds,
+            input_tokens=usage.get("prompt_tokens"),
+            output_tokens=usage.get("completion_tokens"),
+            artifact_text=artifact_text,
+        )
         store.save_citations(assistant_message_id, retrieved_chunks)
 
         if tab == "qa":
@@ -544,21 +562,30 @@ def tailor_message(job_id, tab):
                 store.add_qa(job_id, result["question"], result.get("answer", ""))
             elif qa_list:
                 store.update_qa(qa_list[-1]["id"], result.get("answer", ""))
-            feedback_content = result.get("answer", "")
-        else:
-            new_artifact = result.get("artifact")
-            if new_artifact:
-                store.save_artifact(job_id, tab, new_artifact)
-            feedback_content = new_artifact or current_text
+        elif result.get("artifact"):
+            store.save_artifact(job_id, tab, result["artifact"])
 
         if check_preferences:
-            revision = agents.revise_preferences(tab, display_message, feedback_content, preferences, model)
+            revision = agents.revise_preferences(tab, display_message, artifact_text, preferences, model)
             if revision:
                 store.save_preference(revision["category"], revision["text"])
     except RuntimeError as e:
         session["tailor_error"] = str(e)
 
     return redirect(url_for("tailor", job_id=job_id, tab=tab))
+
+
+@app.route("/jobs/<int:job_id>/tailor/<tab>/message/<int:message_id>/rate", methods=["POST"])
+@login_required
+def rate_message(job_id, tab, message_id):
+    rating = (request.get_json(silent=True) or {}).get("rating")
+    if rating not in ("up", "down"):
+        return {"error": "rating must be 'up' or 'down'"}, 400
+    try:
+        store.rate_chat_message(job_id, tab, message_id, rating)
+    except ValueError as e:
+        return {"error": str(e)}, 404
+    return {"ok": True}
 
 
 # ---- preferences ----------------------------------------------------------
@@ -599,6 +626,15 @@ def chunks():
         chunk_size=store.get_chunk_size(),
         error=session.pop("chunks_error", None),
     )
+
+
+# ---- results (rated chatbot responses) -------------------------------------
+
+@app.route("/results")
+@login_required
+def results():
+    rows = list(reversed(store.load_results()))
+    return render_template("results.html", results=rows, stats=store.results_stats(rows))
 
 
 if __name__ == "__main__":

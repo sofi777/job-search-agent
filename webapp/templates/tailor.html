@@ -28,6 +28,11 @@
   @keyframes typing-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
   .citation { all: unset; cursor: pointer; color: var(--color-accent); font-weight: 600; font-size: 12px; padding: 0 2px; }
   .citation:hover { text-decoration: underline; }
+  .msg-rating { display: flex; gap: 2px; margin-top: 4px; }
+  .rate-btn { all: unset; cursor: pointer; font-size: 13px; padding: 3px 7px; border-radius: 6px; opacity: 0.5; }
+  .rate-btn:hover:not(:disabled) { background: var(--color-neutral-100); opacity: 1; }
+  .rate-btn:disabled { cursor: default; }
+  .rate-btn.selected { opacity: 1; background: var(--color-accent-100); }
   #citation-dialog { max-width: 480px; }
   #citation-dialog .kicker { margin-bottom: var(--space-2); }
   #citation-dialog pre { white-space: pre-wrap; font: inherit; margin: 0; line-height: 1.5; }
@@ -56,7 +61,15 @@
       <div class="chat-messages" id="chat-messages">
         {% for m in chat %}
         <div class="msg-row {{ m.role }}">
-          <div class="msg-bubble">{{ m.rendered }}</div>
+          <div class="msg-bubble">
+            {{ m.rendered }}
+            {% if m.role == 'assistant' %}
+            <div class="msg-rating" data-message-id="{{ m.id }}">
+              <button type="button" class="rate-btn {{ 'selected' if m.rating == 'up' }}" data-rating="up" {{ 'disabled' if m.rating }}>&#128077;</button>
+              <button type="button" class="rate-btn {{ 'selected' if m.rating == 'down' }}" data-rating="down" {{ 'disabled' if m.rating }}>&#128078;</button>
+            </div>
+            {% endif %}
+          </div>
         </div>
         {% else %}
         <div class="text-muted">{{ 'Paste an application question to get started.' if tab == 'qa' else 'Type a message to draft the first version.' }}</div>
@@ -225,6 +238,26 @@ document.addEventListener('click', (e) => {
   document.getElementById('citation-meta').textContent = btn.dataset.filename + ' • similarity ' + btn.dataset.score;
   document.getElementById('citation-text').textContent = btn.dataset.text;
   document.getElementById('citation-dialog').showModal();
+});
+
+// Thumbs up/down: rate in place via fetch, no page reload - disable both buttons for that
+// message on success so it reads as "already rated" immediately, matching what a reload
+// would show afterwards (rating is persisted server-side, see rate_message).
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.rate-btn');
+  if (!btn || btn.disabled) return;
+  const container = btn.closest('.msg-rating');
+  const messageId = container.dataset.messageId;
+  const rating = btn.dataset.rating;
+  fetch(`{{ url_for('tailor_message', job_id=job.id, tab=tab) }}/${messageId}/rate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rating }),
+  }).then((r) => {
+    if (!r.ok) return;
+    container.querySelectorAll('.rate-btn').forEach((b) => { b.disabled = true; });
+    btn.classList.add('selected');
+  });
 });
 </script>
 {% endblock %}

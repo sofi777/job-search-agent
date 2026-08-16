@@ -148,8 +148,10 @@ def _post_with_backoff(messages, model, api_key):
 
 def send_chat(messages, model=DEFAULT_MODEL):
     """Send a full message list ([{role, content}, ...]) to OpenRouter. Returns (content,
-    used_model) - used_model equals `model` unless a fallback kicked in (see below), so
-    callers that care can tell the user their reply came from a different model.
+    used_model, usage) - used_model equals `model` unless a fallback kicked in (see below), so
+    callers that care can tell the user their reply came from a different model. usage is
+    OpenRouter's {"prompt_tokens", "completion_tokens", "total_tokens", ...} dict, or {} if the
+    response didn't include one.
 
     Retries once on a 429 (rate limit) per model, waiting however long OpenRouter says to
     (see _post_with_backoff). If `model` is one of FREE_MODELS and still rate-limited after
@@ -204,11 +206,11 @@ def send_chat(messages, model=DEFAULT_MODEL):
             f"{used_model}'s reply was cut off before finishing (hit the {MAX_TOKENS}-token "
             "limit). Try a shorter message, or a different model from the dropdown."
         )
-    return content, used_model
+    return content, used_model, data.get("usage") or {}
 
 
 def send_message(message, model=DEFAULT_MODEL):
-    """Send a single user message, return (content, used_model). Thin wrapper over send_chat."""
+    """Send a single user message, return (content, used_model, usage). Thin wrapper over send_chat."""
     return send_chat([{"role": "user", "content": message}], model)
 
 
@@ -284,7 +286,7 @@ def classify_turn(artifact_type, message, has_existing_content):
         artifact_type=artifact_type, existing_state=existing_state, message=message
     )
     try:
-        reply, _used_model = send_chat([{"role": "user", "content": prompt}], DEFAULT_MODEL)
+        reply, _used_model, _usage = send_chat([{"role": "user", "content": prompt}], DEFAULT_MODEL)
         data = _parse_json_reply(reply)
     except RuntimeError:
         return {"needs_retrieval": True, "reveals_preference": True}
@@ -374,16 +376,18 @@ def run_tailor_turn(
     `history` is the prior [{role, content}, ...] for this job+tab (assistant
     entries are the raw JSON replies aren't re-sent; only reply text is, see
     caller). `retrieved_context` is format_retrieved_context()'s output for this
-    turn's query (see build_retrieval_query). Returns the parsed JSON dict from
-    the model - shape depends on artifact_type (cover_letter/resume: reply+
-    artifact; qa: reply+action+question+answer).
+    turn's query (see build_retrieval_query). Returns (data, used_model, usage):
+    data is the parsed JSON dict from the model - shape depends on artifact_type
+    (cover_letter/resume: reply+artifact; qa: reply+action+question+answer);
+    used_model/usage are send_chat's, passed through for callers that log/rate
+    the response (see app.py tailor_message).
     """
     cacheable, dynamic = build_tailor_system_prompt_parts(
         artifact_type, job, profile, preferences, current_artifact_text, retrieved_context
     )
     system_content = _build_system_content(cacheable, dynamic, model)
     messages = [{"role": "system", "content": system_content}, *history, {"role": "user", "content": user_message}]
-    reply, used_model = send_chat(messages, model)
+    reply, used_model, usage = send_chat(messages, model)
     data = _parse_json_reply(reply)
     if data.get("artifact"):
         data["artifact"] = strip_citations(data["artifact"])
@@ -391,7 +395,7 @@ def run_tailor_turn(
         data["answer"] = strip_citations(data["answer"])
     if used_model != model and data.get("reply"):
         data["reply"] = f"_(Note: {model} was rate-limited, so I used {used_model} for this reply.)_\n\n{data['reply']}"
-    return data
+    return data, used_model, usage
 
 
 # ---- cross-job preference learning ----------------------------------------
@@ -413,7 +417,7 @@ def revise_preferences(artifact_type, feedback, current_content, preferences, mo
         pref_general=preferences.get("general") or "(none yet)",
         pref_category=preferences.get(artifact_type) or "(none yet)",
     )
-    reply, _used_model = send_chat([{"role": "user", "content": prompt}], model)
+    reply, _used_model, _usage = send_chat([{"role": "user", "content": prompt}], model)
     data = _parse_json_reply(reply)
     if not data.get("changed"):
         return None

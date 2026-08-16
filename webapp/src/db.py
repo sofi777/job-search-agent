@@ -2,7 +2,11 @@
 
 Tables: `users` (profile/onboarding answers + settings), `jobs` (every job
 posting, sample or user-added), `job_progress` (per-user, per-job
-status/comments), `chat_messages` (per-job, per-tab tailoring chat threads),
+status/comments), `chat_messages` (per-job, per-tab tailoring chat threads;
+assistant rows also carry response_time_seconds/input_tokens/output_tokens,
+the resulting artifact_text (the actual cover letter/résumé/Q&A answer as of
+that turn, not just the conversational reply), and an optional thumbs up/down
+`rating` - see store.rate_chat_message),
 `artifacts` (generated cover letters/resumes/Q&A answers), `preferences`
 (learned writing-style preferences, one row per category: general,
 cover_letter, resume, qa), `documents` (extracted text from uploaded
@@ -121,7 +125,12 @@ def init_db():
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 model TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                response_time_seconds REAL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                rating TEXT,
+                artifact_text TEXT
             )
         """)
         conn.execute("""
@@ -193,6 +202,44 @@ def init_db():
                 conn.execute(f"ALTER TABLE job_progress DROP COLUMN {column}")
             except sqlite3.OperationalError:
                 pass  # already migrated, or column never existed on a fresh DB
+
+        # Migration: chat_messages gained rating/usage/timing columns for the Results tab
+        # (thumbs up/down tracking) - CREATE TABLE above only covers fresh DBs.
+        for column, coltype in (
+            ("response_time_seconds", "REAL"),
+            ("input_tokens", "INTEGER"),
+            ("output_tokens", "INTEGER"),
+            ("rating", "TEXT"),
+            ("artifact_text", "TEXT"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE chat_messages ADD COLUMN {column} {coltype}")
+            except sqlite3.OperationalError:
+                pass  # already migrated
+
+        # Backfill: chat_messages rows created before artifact_text existed are still NULL.
+        # Only the LATEST assistant message in a cover_letter/resume thread can be recovered
+        # accurately - it necessarily produced whatever's currently saved in artifacts, since
+        # nothing since has changed it. Earlier messages in the same thread stay NULL on
+        # purpose: their in-between draft versions were never preserved anywhere (artifacts
+        # only keeps the latest version), so backfilling them would misattribute newer content
+        # to an older turn - see results.html's "not tracked" fallback for NULL vs "" (a
+        # genuine no-op turn). qa isn't backfilled: a chat message can't be reliably matched to
+        # one qa_list entry after the fact. Runs on every startup but is a no-op once caught up
+        # (only targets rows still NULL), same as the ADD COLUMN migrations above.
+        stale = conn.execute(
+            "SELECT id, job_id, type FROM chat_messages WHERE role = 'assistant' AND artifact_text IS NULL "
+            "AND type IN ('cover_letter', 'resume') "
+            "AND id IN (SELECT MAX(id) FROM chat_messages WHERE role = 'assistant' GROUP BY job_id, type)"
+        ).fetchall()
+        for row in stale:
+            artifact = conn.execute(
+                "SELECT content FROM artifacts WHERE job_id = ? AND type = ?", (row["job_id"], row["type"])
+            ).fetchone()
+            if artifact:
+                conn.execute(
+                    "UPDATE chat_messages SET artifact_text = ? WHERE id = ?", (artifact["content"], row["id"])
+                )
 
 
 def _row_to_user(row):
@@ -355,31 +402,71 @@ def update_progress(user_id, job_id, **fields):
         )
 
 
+_CHAT_MESSAGE_COLUMNS = (
+    "id, role, content, model, created_at, response_time_seconds, input_tokens, output_tokens, "
+    "rating, artifact_text"
+)
+
+
 def fetch_chat_messages(job_id, chat_type):
     """Return this job+tab's chat thread, oldest first. job_id may be None (global thread)."""
     with db_transaction() as conn:
         if job_id is None:
             rows = conn.execute(
-                "SELECT id, role, content, model, created_at FROM chat_messages "
+                f"SELECT {_CHAT_MESSAGE_COLUMNS} FROM chat_messages "
                 "WHERE job_id IS NULL AND type = ? ORDER BY id",
                 (chat_type,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT id, role, content, model, created_at FROM chat_messages "
+                f"SELECT {_CHAT_MESSAGE_COLUMNS} FROM chat_messages "
                 "WHERE job_id = ? AND type = ? ORDER BY id",
                 (job_id, chat_type),
             ).fetchall()
     return [dict(r) for r in rows]
 
 
-def add_chat_message(job_id, chat_type, role, content, model, created_at):
+def add_chat_message(
+    job_id, chat_type, role, content, model, created_at,
+    response_time_seconds=None, input_tokens=None, output_tokens=None, artifact_text=None,
+):
     with db_transaction() as conn:
         cur = conn.execute(
-            "INSERT INTO chat_messages (job_id, type, role, content, model, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (job_id, chat_type, role, content, model, created_at),
+            "INSERT INTO chat_messages "
+            "(job_id, type, role, content, model, created_at, response_time_seconds, input_tokens, "
+            "output_tokens, artifact_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                job_id, chat_type, role, content, model, created_at,
+                response_time_seconds, input_tokens, output_tokens, artifact_text,
+            ),
         )
         return cur.lastrowid
+
+
+def get_chat_message(message_id):
+    with db_transaction() as conn:
+        row = conn.execute(
+            f"SELECT job_id, type, {_CHAT_MESSAGE_COLUMNS} FROM chat_messages WHERE id = ?", (message_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_preceding_chat_message(job_id, chat_type, before_id, role):
+    """The most recent message strictly before before_id in this job+tab thread with the given
+    role - used to find a rated assistant reply's paired user question (see store.rate_chat_message).
+    """
+    with db_transaction() as conn:
+        row = conn.execute(
+            f"SELECT {_CHAT_MESSAGE_COLUMNS} FROM chat_messages "
+            "WHERE job_id = ? AND type = ? AND role = ? AND id < ? ORDER BY id DESC LIMIT 1",
+            (job_id, chat_type, role, before_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_chat_message_rating(message_id, rating):
+    with db_transaction() as conn:
+        conn.execute("UPDATE chat_messages SET rating = ? WHERE id = ?", (rating, message_id))
 
 
 def get_artifact(job_id, artifact_type):

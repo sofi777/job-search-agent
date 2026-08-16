@@ -20,6 +20,9 @@ data/uploads/*
 # SQLite database (user + progress state, not sample data)
 data/app.db
 
+# Rated chatbot responses (see src/store.py rate_chat_message) - user data, not sample data
+data/results.json
+
 # Chroma vector store (RAG chunk embeddings, rebuilt from data/app.db's documents table)
 data/chroma/
 

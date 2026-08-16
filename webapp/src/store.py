@@ -199,8 +199,97 @@ def get_chat_for_display(job_id, chat_type):
     return messages
 
 
-def add_chat_message(job_id, chat_type, role, content, model=None):
-    return db.add_chat_message(job_id, chat_type, role, content, model, _now())
+def add_chat_message(
+    job_id, chat_type, role, content, model=None,
+    response_time_seconds=None, input_tokens=None, output_tokens=None, artifact_text=None,
+):
+    return db.add_chat_message(
+        job_id, chat_type, role, content, model, _now(),
+        response_time_seconds, input_tokens, output_tokens, artifact_text,
+    )
+
+
+def rate_chat_message(job_id, chat_type, message_id, rating):
+    """Record a thumbs up/down on one assistant chat response.
+
+    Persists to chat_messages.rating (so the buttons show as already-rated after a reload)
+    and appends a full record - question, response, the resulting artifact (cover letter/
+    résumé/Q&A answer, not just the chat reply), model, timestamp, response time, token
+    counts - to data/results.json for the Results tab. A message can only be rated once: if
+    it already has a rating, this is a no-op (the UI disables both buttons after the first
+    click, so this only matters against a direct API call) - it never overwrites the DB
+    rating or duplicates the results.json entry out of sync with each other. Raises
+    ValueError if message_id doesn't belong to this job+tab or isn't an assistant reply.
+    """
+    message = db.get_chat_message(message_id)
+    if message is None or message["job_id"] != job_id or message["type"] != chat_type or message["role"] != "assistant":
+        raise ValueError("Message not found for this job/tab.")
+    if message["rating"]:
+        return
+
+    db.set_chat_message_rating(message_id, rating)
+
+    question = db.get_preceding_chat_message(job_id, chat_type, message_id, "user")
+    job = get_job(job_id)
+    _append_result({
+        "id": message_id,
+        "job_id": job_id,
+        "job_company": job["company"] if job else "",
+        "job_title": job["title"] if job else "",
+        "tab": chat_type,
+        "question": question["content"] if question else "",
+        "response": message["content"],
+        # None (not "") means this message predates artifact_text tracking - see db.py's
+        # backfill migration and results.html, which render that case differently from a
+        # genuine "" (this turn really didn't produce/change anything).
+        "artifact": message["artifact_text"],
+        "rating": rating,
+        "model": message["model"],
+        "timestamp": message["created_at"],
+        "response_time_seconds": message["response_time_seconds"],
+        "input_tokens": message["input_tokens"],
+        "output_tokens": message["output_tokens"],
+    })
+
+
+RESULTS_FILE = DATA_DIR / "results.json"
+
+
+def load_results():
+    if not RESULTS_FILE.exists():
+        return []
+    try:
+        return json.loads(RESULTS_FILE.read_text())
+    except json.JSONDecodeError:
+        return []
+
+
+def _append_result(entry):
+    results = load_results()
+    results.append(entry)
+    RESULTS_FILE.write_text(json.dumps(results, indent=2))
+
+
+def results_stats(results):
+    """{"overall": bucket, "by_model": {model: bucket}}, bucket = {up, down, total, percent_positive}.
+    percent_positive is None (not 0) when total is 0, so the template can show "-" instead of a
+    misleading 0%."""
+    def bucket(rows):
+        up = sum(1 for r in rows if r["rating"] == "up")
+        down = sum(1 for r in rows if r["rating"] == "down")
+        total = up + down
+        return {
+            "up": up, "down": down, "total": total,
+            "percent_positive": round(100 * up / total) if total else None,
+        }
+
+    by_model = {}
+    for r in results:
+        by_model.setdefault(r["model"], []).append(r)
+    return {
+        "overall": bucket(results),
+        "by_model": {model: bucket(rows) for model, rows in by_model.items()},
+    }
 
 
 def get_artifact_text(job_id, artifact_type):

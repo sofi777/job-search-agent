@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Results - Dream Job Landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<style>
+  .stat-card { border: 1px solid var(--color-divider); padding: var(--space-3); min-width: 170px; }
+  .stat-card .pct { font-size: 22px; font-weight: 700; }
+  .result-row { cursor: pointer; }
+  .ellipsis { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc-cell { max-width: 320px; max-height: 40px; overflow-y: auto; white-space: pre-line; line-height: 1.4; font-size: 13px; }
+  .doc-cell a { display: inline-block; margin-top: 4px; font-size: 12px; }
+</style>
+
+<div class="container">
+  <h1>Results</h1>
+  <p class="text-muted">Every chatbot response rated 👍/👎 in Tailor my application.</p>
+
+  <div style="display:flex;gap:var(--space-3);flex-wrap:wrap;margin:var(--space-4) 0;">
+    <div class="stat-card">
+      <div class="text-muted" style="margin-bottom:4px;">Overall</div>
+      <div class="pct">{{ (stats.overall.percent_positive ~ '%') if stats.overall.percent_positive is not none else 'n/a' }}</div>
+      <div class="text-muted" style="font-size:12px;margin-top:4px;">&#128077; {{ stats.overall.up }} &middot; &#128078; {{ stats.overall.down }} &middot; {{ stats.overall.total }} rated</div>
+    </div>
+    {% for model, m in stats.by_model.items() %}
+    <div class="stat-card">
+      <div class="text-muted" style="margin-bottom:4px;">{{ model }}</div>
+      <div class="pct">{{ (m.percent_positive ~ '%') if m.percent_positive is not none else 'n/a' }}</div>
+      <div class="text-muted" style="font-size:12px;margin-top:4px;">&#128077; {{ m.up }} &middot; &#128078; {{ m.down }} &middot; {{ m.total }} rated</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="hr"></div>
+
+  {% if not results %}
+  <div class="text-muted" style="padding:var(--space-6) 0;">No rated responses yet - rate a chatbot reply with &#128077;/&#128078; in Tailor my application to see it here.</div>
+  {% else %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr><th></th><th>Model</th><th>Input</th><th>Output</th><th>Generated document</th></tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+        <tr class="result-row" data-index="{{ loop.index0 }}">
+          <td>{{ '\U0001F44D' if r.rating == 'up' else '\U0001F44E' }}</td>
+          <td><span class="tag tag-neutral">{{ r.model }}</span></td>
+          <td class="ellipsis">{{ r.question }}</td>
+          <td class="ellipsis">{{ r.response }}</td>
+          <td>
+            <div class="doc-cell" title="{{ r.artifact or '' }}">
+              {% if r.artifact %}{{ r.artifact }}{% elif r.artifact is none %}(not tracked - this message predates document tracking){% else %}(nothing generated this turn){% endif %}
+              <a href="{{ url_for('tailor', job_id=r.job_id, tab=r.tab) }}" target="_blank" onclick="event.stopPropagation()">View in chat &rarr;</a>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <dialog id="result-dialog" style="max-width:640px;">
+    <div class="kicker" id="result-kicker"></div>
+    <p class="text-muted" id="result-meta" style="margin-bottom:var(--space-3);"></p>
+    <div style="font-weight:600;margin-bottom:6px;">Input</div>
+    <pre id="result-question" style="white-space:pre-wrap;font:inherit;margin:0 0 var(--space-4);"></pre>
+    <div style="font-weight:600;margin-bottom:6px;">Output</div>
+    <pre id="result-response" style="white-space:pre-wrap;font:inherit;margin:0 0 var(--space-4);"></pre>
+    <div style="font-weight:600;margin-bottom:6px;">Generated document</div>
+    <pre id="result-artifact" style="white-space:pre-wrap;font:inherit;margin:0 0 6px;max-height:240px;overflow-y:auto;"></pre>
+    <a id="result-chat-link" href="#" target="_blank" style="font-size:13px;">View in chat &rarr;</a>
+    <div style="display:flex;justify-content:flex-end;margin-top:var(--space-4);">
+      <button type="button" class="btn btn-secondary" onclick="document.getElementById('result-dialog').close()">Close</button>
+    </div>
+  </dialog>
+</div>
+
+<script>
+const RESULTS = {{ results | tojson }};
+document.querySelectorAll('.result-row').forEach((row) => {
+  row.addEventListener('click', () => {
+    const r = RESULTS[row.dataset.index];
+    const time = r.response_time_seconds != null ? r.response_time_seconds.toFixed(1) + 's' : 'n/a';
+    const tokens = (r.input_tokens != null ? r.input_tokens : 'n/a') + ' in / ' + (r.output_tokens != null ? r.output_tokens : 'n/a') + ' out tokens';
+    document.getElementById('result-kicker').textContent = (r.rating === 'up' ? '\u{1F44D}' : '\u{1F44E}') + ' ' + r.model;
+    document.getElementById('result-meta').textContent =
+      r.job_title + ' at ' + r.job_company + ' (' + r.tab + ') • ' + r.timestamp + ' • ' + time + ' • ' + tokens;
+    document.getElementById('result-question').textContent = r.question;
+    document.getElementById('result-response').textContent = r.response;
+    document.getElementById('result-artifact').textContent = r.artifact ? r.artifact
+      : r.artifact === null ? '(not tracked - this message predates document tracking)'
+      : '(nothing generated this turn)';
+    document.getElementById('result-chat-link').href = '/jobs/' + r.job_id + '/tailor?tab=' + r.tab;
+    document.getElementById('result-dialog').showModal();
+  });
+});
+</script>
+{% endblock %}

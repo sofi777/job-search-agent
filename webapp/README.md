@@ -106,6 +106,15 @@ webapp/
   reports that clearly instead of adding a garbage entry. Sites with an
   interactive bot challenge (e.g. Cloudflare, some Indeed pages) aren't
   fetchable at all without a real browser, which this app doesn't run.
+- **Response ratings** (thumbs up/down): every assistant reply in the tailoring chat
+  gets a 👍/👎 under it. Rating is one-shot (both buttons disable immediately via a
+  fetch call, and stay disabled after a reload - the rating is persisted on the
+  message). Each rated response - question, response text, model actually used
+  (not just requested; see below), timestamp, response time, and input/output token
+  counts - is appended to `data/results.json`.
+- **Results** (`/results`): every rated response as a row (rating icon, model badge,
+  input, output); click a row for the full record in a dialog. Top of the page shows
+  overall and per-model rated counts and % positive.
 
 ## What's a placeholder (by design)
 
@@ -270,6 +279,14 @@ tracks how each row got there. `data/jobs.json` is only read to seed that table 
 first run and to upsert 'sample' rows (matched by url) when "Reload sample data" is
 clicked, it's never merged in at read time, and editing it can't create duplicates
 or touch 'custom' rows.
+
+`data/results.json` is the one exception to "everything lives in `app.db`": rated
+chat responses (see Response ratings above) are appended there as plain JSON, one
+entry per rating, since it's meant to be a flat, easy-to-inspect export rather than
+a queryable table. `chat_messages.rating` in the DB is the source of truth for
+whether a given message has been rated (so buttons stay disabled after a reload);
+`results.json` is written once, the first time a message is rated - see
+`store.rate_chat_message()`.
 
 ## Notes
 
