@@ -1,10 +1,12 @@
 """Text extraction for uploaded files (onboarding docs, chat attachments). Supported: .pdf, .docx, .txt, .md."""
 import io
+import re
 
 from docx import Document as DocxDocument
 from pypdf import PdfReader
 
-MAX_CHARS = 12000  # keep a single attachment from blowing out the prompt
+MAX_CHARS = 500000  # sanity ceiling against pathological uploads - RAG chunking (src/rag.py)
+                     # bounds what actually reaches a prompt, this just stops runaway extraction
 
 
 def extract_text(file_storage):
@@ -22,12 +24,32 @@ def extract_text(file_storage):
         try:
             reader = PdfReader(buffer)
             text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            # pypdf emits one newline per positioned text run, not per real line - common with
+            # justified text / design-tool-generated PDFs, and produces a near one-word-per-line
+            # mess. Collapse all whitespace runs to a single space so it reads as normal prose.
+            # This also erases any genuine blank-line paragraph gaps, so a PDF-sourced story_bank
+            # won't get per-story chunks the way a Heading-styled .docx does (see src/rag.py) -
+            # use .docx with Heading styles for that.
+            text = re.sub(r"\s+", " ", text)
         except Exception as e:
             raise RuntimeError(f"Could not read {filename} as a PDF: {e}") from e
     elif ext == "docx":
         try:
             doc = DocxDocument(buffer)
-            text = "\n".join(p.text for p in doc.paragraphs)
+            # Mark Heading-styled paragraphs as markdown headings ("## text") so downstream
+            # chunking (src/rag.py split_by_headings) can use them as section boundaries -
+            # plain .text loses all style info, headings would otherwise be indistinguishable
+            # from body text.
+            lines = []
+            for p in doc.paragraphs:
+                stripped = p.text.strip()
+                if not stripped:
+                    continue
+                if p.style.name.startswith("Heading"):
+                    lines.append(f"## {stripped}")
+                else:
+                    lines.append(stripped)
+            text = "\n\n".join(lines)
         except Exception as e:
             raise RuntimeError(f"Could not read {filename} as a .docx: {e}") from e
     elif ext in ("txt", "md"):

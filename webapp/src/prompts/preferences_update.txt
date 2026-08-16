@@ -1,13 +1,13 @@
-A user gave feedback while working on their {artifact_type} for a job application. Decide whether it reveals a durable, general writing/style preference worth remembering for future documents, or whether it's specific to this one document/job and shouldn't be saved.
+A user gave feedback on their {artifact_type} for a job application. Does it reveal a durable, general writing/style preference worth remembering for future documents, or is it specific to this one document/job and shouldn't be saved?
 
-Feedback message: {feedback}
-What it was about (current content at the time): {current_content}
+Feedback: {feedback}
+Current content at the time: {current_content}
 
-Currently stored preferences:
+Stored preferences:
 General (applies to everything): {pref_general}
-{artifact_type} (this category, overrides general): {pref_category}
+{artifact_type} (overrides general): {pref_category}
 
 Reply with ONLY a JSON object, no markdown fences, no commentary outside the JSON, with exactly these keys:
 "changed": true or false
-"category": "general" or "{artifact_type}" (which one to update; only meaningful if changed is true)
-"text": string, the FULL revised text for that category (only meaningful if changed is true; keep it a short bullet-style list, merge with what's already there rather than just appending)
+"category": "general" or "{artifact_type}" (which one to update; only meaningful if changed)
+"text": a single string, not a JSON array (only meaningful if changed) - the FULL revised text for that category, formatted as short bullet points separated by newlines within that one string, merging with what's already there rather than appending

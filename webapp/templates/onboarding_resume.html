@@ -34,7 +34,7 @@
       </div>
 
       <div class="field">
-        <label>Story bank (achievements, STAR stories, a "brag document" - whatever you've got). Separate each story with a blank line - each one becomes its own retrievable chunk.</label>
+        <label>Story bank (achievements, STAR stories, a "brag document" - whatever you've got). In a .docx, use a Heading style before each story (e.g. Heading 2); otherwise separate stories with a blank line. Each story becomes its own retrievable chunk.</label>
         <div class="dropzone {{ 'filled' if profile_documents.get('story_bank') else '' }}" style="padding:var(--space-3);">
           <div class="text-muted">{{ profile_documents.get('story_bank') or 'PDF, DOCX, or TXT' }}{{ ' (already on file, re-upload to replace it)' if profile_documents.get('story_bank') else '' }}</div>
           <input type="file" name="story_bank" accept=".pdf,.docx,.txt,.md" style="margin-top:8px;">

@@ -255,6 +255,15 @@ def save_profile_document(doc_type, filename, content):
     rag.chunk_document({"id": doc_id, "job_id": None, "type": doc_type, "content": content})
 
 
+def delete_profile_document(doc_type):
+    """Remove an optional profile-wide document (cover_letter_sample, story_bank) and its chunks,
+    leaving that slot empty rather than replaced. No-op if there's nothing on file for doc_type."""
+    existing = next((d for d in db.fetch_profile_documents(user_id) if d["type"] == doc_type), None)
+    if existing:
+        rag.delete_document(existing["id"])
+        db.delete_document(existing["id"])
+
+
 def save_chat_attachment(job_id, filename, content, global_scope):
     """Save a file attached mid-chat. global_scope=True reuses it across every job; False scopes it to this job only."""
     target_job_id = None if global_scope else job_id

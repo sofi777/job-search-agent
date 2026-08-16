@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+{% block title %}Profile - Dream Job Landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<script>
+function removeChip(btn) {
+  btn.closest('.chip').remove();
+}
+function addChip(name, input) {
+  const value = input.value.trim();
+  if (!value) return;
+  const container = document.getElementById(name + '-chips');
+  const dup = [...container.querySelectorAll('.chip')].some(c => c.dataset.value.toLowerCase() === value.toLowerCase());
+  input.value = '';
+  if (dup) return;
+
+  const chip = document.createElement('div');
+  chip.className = 'chip';
+  chip.dataset.value = value;
+  chip.appendChild(document.createTextNode(value + ' '));
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.title = 'Remove';
+  removeBtn.textContent = '×';
+  removeBtn.onclick = () => chip.remove();
+  chip.appendChild(removeBtn);
+
+  const hidden = document.createElement('input');
+  hidden.type = 'hidden';
+  hidden.name = name;
+  hidden.value = value;
+  chip.appendChild(hidden);
+
+  container.appendChild(chip);
+}
+function addChipOnEnter(event, name, input) {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    addChip(name, input);
+  }
+}
+</script>
+
+<div class="container" style="max-width:760px;">
+  <h1>Profile</h1>
+  <p class="text-muted">Everything set during onboarding, editable here. Uploading a new resume, cover letter, or story bank replaces the existing one as the source of truth for tailoring.</p>
+
+  {% if saved %}
+  <p style="color:var(--color-accent-800);background:var(--color-accent-100);padding:10px 14px;font-size:13px;margin-bottom:var(--space-4);">Saved.</p>
+  {% endif %}
+  {% for warning in document_warnings %}
+  <p style="color:var(--color-accent);font-size:13px;margin-bottom:var(--space-3);">{{ warning }} - try a different file, or Save again to skip it.</p>
+  {% endfor %}
+
+  <form method="post" enctype="multipart/form-data">
+
+    <h2>Documents</h2>
+    <div class="field">
+      <label>Resume</label>
+      <div class="dropzone filled" style="padding:var(--space-3);">
+        <div class="text-muted">{{ profile.resume_filename }} (upload to replace it)</div>
+        <input type="file" name="resume" accept=".pdf,.docx" style="margin-top:8px;">
+      </div>
+      <div style="margin-top:8px;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:4px;">
+          <input type="radio" name="resume_action" value="keep" checked> If I upload a new resume above, keep my current roles and home base
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;">
+          <input type="radio" name="resume_action" value="regenerate"> Regenerate roles and home base from the new resume (overwrites current values)
+        </label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>A cover letter you've written before</label>
+      <div class="dropzone {{ 'filled' if profile_documents.get('cover_letter_sample') else '' }}" style="padding:var(--space-3);">
+        <div class="text-muted">{{ profile_documents.get('cover_letter_sample') or 'PDF, DOCX, or TXT' }}{{ ' (upload to replace it)' if profile_documents.get('cover_letter_sample') else '' }}</div>
+        <input type="file" name="cover_letter_sample" accept=".pdf,.docx,.txt,.md" style="margin-top:8px;">
+        {% if profile_documents.get('cover_letter_sample') %}
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;">
+          <input type="checkbox" name="remove_cover_letter_sample" value="1"> Remove this file
+        </label>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Story bank (achievements, STAR stories, a "brag document")</label>
+      <div class="dropzone {{ 'filled' if profile_documents.get('story_bank') else '' }}" style="padding:var(--space-3);">
+        <div class="text-muted">{{ profile_documents.get('story_bank') or 'PDF, DOCX, or TXT' }}{{ ' (upload to replace it)' if profile_documents.get('story_bank') else '' }}</div>
+        <input type="file" name="story_bank" accept=".pdf,.docx,.txt,.md" style="margin-top:8px;">
+        {% if profile_documents.get('story_bank') %}
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;">
+          <input type="checkbox" name="remove_story_bank" value="1"> Remove this file
+        </label>
+        {% endif %}
+      </div>
+    </div>
+
+    <h2 style="margin-top:var(--space-6);">Roles</h2>
+    <div class="field">
+      <div class="chip-row" id="roles-chips">
+        {% for r in profile.roles %}
+        <div class="chip" data-value="{{ r }}">
+          {{ r }}
+          <button type="button" title="Remove" onclick="removeChip(this)">&times;</button>
+          <input type="hidden" name="roles" value="{{ r }}">
+        </div>
+        {% endfor %}
+      </div>
+      <div class="add-row">
+        <input class="input" id="roles-input" placeholder="Add another role, e.g. Director of Product"
+               onkeydown="addChipOnEnter(event, 'roles', this)">
+        <button type="button" class="btn btn-secondary" onclick="addChip('roles', document.getElementById('roles-input'))">Add</button>
+      </div>
+    </div>
+
+    <h2 style="margin-top:var(--space-6);">Location</h2>
+    <div class="field">
+      <label for="home_address">Home base</label>
+      <input class="input" id="home_address" name="home_address" value="{{ profile.home_address }}">
+    </div>
+    <div class="field">
+      <label for="commute_miles">Commute radius: <span id="commute_val">{{ profile.commute_miles }}</span> miles</label>
+      <input type="range" id="commute_miles" name="commute_miles" min="0" max="60" value="{{ profile.commute_miles }}"
+             oninput="document.getElementById('commute_val').textContent = this.value" style="width:100%;accent-color:var(--color-accent);">
+    </div>
+    <div class="field">
+      <label>Eligible to work in</label>
+      <div class="chip-row" id="eligible_countries-chips">
+        {% for c in profile.eligible_countries %}
+        <div class="chip" data-value="{{ c }}">
+          {{ c }}
+          <button type="button" title="Remove" onclick="removeChip(this)">&times;</button>
+          <input type="hidden" name="eligible_countries" value="{{ c }}">
+        </div>
+        {% endfor %}
+      </div>
+      <div class="add-row">
+        <input class="input" id="eligible_countries-input" list="country-options" autocomplete="off" placeholder="Add a country, e.g. Australia"
+               onkeydown="addChipOnEnter(event, 'eligible_countries', this)">
+        <button type="button" class="btn btn-secondary" onclick="addChip('eligible_countries', document.getElementById('eligible_countries-input'))">Add</button>
+      </div>
+    </div>
+
+    <label style="display:flex;align-items:center;gap:10px;border:1px solid var(--color-divider);padding:12px 14px;margin-bottom:var(--space-4);cursor:pointer;">
+      <input type="checkbox" name="remote_ok" {{ 'checked' if profile.remote_ok else '' }}
+             onchange="document.getElementById('remote-countries-section').style.display = this.checked ? 'block' : 'none';"
+             style="width:16px;height:16px;">
+      <span>
+        <span style="font-family:var(--font-heading);font-weight:800;font-size:14px;display:block;">Remote roles are fine</span>
+        <span class="text-muted">Include fully-remote postings regardless of company location</span>
+      </span>
+    </label>
+
+    <div id="remote-countries-section" class="field" style="display:{{ 'block' if profile.remote_ok else 'none' }};">
+      <label>Include remote roles based in</label>
+      <div class="chip-row" id="remote_countries-chips">
+        {% for c in profile.remote_countries %}
+        <div class="chip" data-value="{{ c }}">
+          {{ c }}
+          <button type="button" title="Remove" onclick="removeChip(this)">&times;</button>
+          <input type="hidden" name="remote_countries" value="{{ c }}">
+        </div>
+        {% endfor %}
+      </div>
+      <div class="add-row">
+        <input class="input" id="remote_countries-input" list="country-options" autocomplete="off" placeholder="Add a country, e.g. Australia"
+               onkeydown="addChipOnEnter(event, 'remote_countries', this)">
+        <button type="button" class="btn btn-secondary" onclick="addChip('remote_countries', document.getElementById('remote_countries-input'))">Add</button>
+      </div>
+    </div>
+
+    <datalist id="country-options">
+      {% for c in countries %}<option value="{{ c }}">{% endfor %}
+    </datalist>
+
+    <h2 style="margin-top:var(--space-6);">Industries &amp; preferences</h2>
+    <div class="field">
+      <div class="chip-row">
+        {% for name in industry_options %}
+        <label class="chip-toggle {{ 'selected' if name in profile.industries else '' }}">
+          <input type="checkbox" name="industries" value="{{ name }}" {{ 'checked' if name in profile.industries else '' }}
+                 style="display:none;" onchange="this.closest('label').classList.toggle('selected', this.checked)">
+          {{ name }}
+        </label>
+        {% endfor %}
+      </div>
+      <textarea class="input" name="industries_text" placeholder="e.g. I want a small team, real ownership, and a product people actually love. Not interested in ad-tech.">{{ profile.industries_text }}</textarea>
+    </div>
+
+    <h2 style="margin-top:var(--space-6);">Salary</h2>
+    <div style="display:flex;gap:10px;">
+      <div class="field" style="flex:1;">
+        <label for="min_salary">Minimum salary</label>
+        <input class="input" id="min_salary" name="min_salary" type="number" step="5000" value="{{ profile.min_salary }}">
+      </div>
+      <div class="field" style="width:120px;">
+        <label for="currency">Currency</label>
+        <select class="input" id="currency" name="currency">
+          {% for c in currency_options %}
+          <option value="{{ c }}" {{ 'selected' if c == profile.currency else '' }}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="wizard-actions end">
+      <button type="submit" class="btn btn-primary">Save changes</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

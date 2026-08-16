@@ -23,16 +23,48 @@ DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 MAX_RATE_LIMIT_WAIT_SECONDS = 30
+# Generous on purpose: reasoning models spend tokens "thinking" before ever emitting the
+# reply, and the visible reply itself is JSON wrapping a few-hundred-word artifact - a too-low
+# cap truncates mid-generation, coming back either as content: null or, worse, a real-looking
+# but incomplete JSON string that fails to parse (see send_chat's finish_reason check).
+MAX_TOKENS = 8000
 
 # Shown in the model dropdown. Free options first, then a couple of paid ones.
 # Browse the full catalog at https://openrouter.ai/models.
+# deepseek/deepseek-r1:free was here until it was pulled from OpenRouter's catalog entirely
+# (calling it now 404s: "unavailable for free") - replaced with nvidia/nemotron-3-super-120b-a12b:free,
+# picked because it's large (120B), non-reasoning (no ":thinking" burn-the-budget risk, see
+# gpt-oss-20b below), and flags structured_outputs support in OpenRouter's own model metadata.
 MODEL_OPTIONS = [
     "google/gemma-4-26b-a4b-it:free",
     "openai/gpt-oss-20b:free",
-    "deepseek/deepseek-r1:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
     "openai/gpt-4o-mini",
     "anthropic/claude-sonnet-5",
 ]
+
+# Fallback order when a free model is rate-limited (see send_chat) - by suitability for this
+# app's actual task (JSON creative writing: cover letters/resumes/Q&A), not MODEL_OPTIONS'
+# display order. gpt-oss-20b is a reasoning model that can burn its whole token budget
+# "thinking" and return content: null on exactly this kind of task (see DEFAULT_MODEL above),
+# so it's demoted to last resort.
+FREE_MODEL_PRIORITY = [
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "openai/gpt-oss-20b:free",
+]
+
+# Chat history sent to the model, capped to the last N messages (~3 exchanges). The current
+# artifact/Q&A list already carries the full up-to-date state into every prompt, so older
+# exchanges are mostly redundant for continuing edits - the model doesn't need to re-see turn 1
+# by turn 6. Doesn't affect what's stored/displayed (see store.get_chat_for_display).
+HISTORY_MAX_MESSAGES = 6
+
+# Anthropic (via OpenRouter) discounts repeat input tokens ~90% within a short cache TTL when
+# marked with cache_control. Only these models get the split-prompt/cache_control treatment in
+# _build_system_content - other providers either ignore the field or don't support it the same
+# way, so they get the plain single-string prompt as before.
+ANTHROPIC_MODEL_PREFIX = "anthropic/"
 
 
 def _load_env():
@@ -66,10 +98,7 @@ def _retry_after_seconds(body_text):
 
 
 def _post(messages, model, api_key):
-    # max_tokens is generous on purpose: reasoning models spend tokens "thinking"
-    # before ever emitting the reply, and a too-low cap truncates them mid-thought,
-    # coming back with content: null (see send_chat's check below).
-    body = json.dumps({"model": model, "messages": messages, "max_tokens": 4000}).encode()
+    body = json.dumps({"model": model, "messages": messages, "max_tokens": MAX_TOKENS}).encode()
 
     request = urllib.request.Request(
         OPENROUTER_URL,
@@ -103,51 +132,83 @@ def _log_last_call(messages, model, response_data):
         pass  # debug aid only, never let logging break a real request
 
 
-def send_chat(messages, model=DEFAULT_MODEL):
-    """Send a full message list ([{role, content}, ...]) to OpenRouter, return the assistant's text reply.
+def _post_with_backoff(messages, model, api_key):
+    """POST once, retrying a single time on 429 after OpenRouter's suggested wait (capped at
+    MAX_RATE_LIMIT_WAIT_SECONDS). Raises HTTPError - 429 or otherwise - if still failing
+    after that, unread, so the caller can inspect/fall back on it."""
+    try:
+        return _post(messages, model, api_key)
+    except urllib.error.HTTPError as e:
+        if e.code != 429:
+            raise
+        wait = min(_retry_after_seconds(e.read().decode()) or 5, MAX_RATE_LIMIT_WAIT_SECONDS)
+        time.sleep(wait)
+        return _post(messages, model, api_key)
 
-    Retries once on a 429 (rate limit), waiting however long OpenRouter says
-    to (capped at MAX_RATE_LIMIT_WAIT_SECONDS). Any other failure, or a 429
-    that's still rate-limited after that wait, raises RuntimeError with a
-    readable message instead of the raw error JSON.
+
+def send_chat(messages, model=DEFAULT_MODEL):
+    """Send a full message list ([{role, content}, ...]) to OpenRouter. Returns (content,
+    used_model) - used_model equals `model` unless a fallback kicked in (see below), so
+    callers that care can tell the user their reply came from a different model.
+
+    Retries once on a 429 (rate limit) per model, waiting however long OpenRouter says to
+    (see _post_with_backoff). If `model` is one of FREE_MODELS and still rate-limited after
+    that, falls back through FREE_MODEL_PRIORITY in order (skipping `model` itself) -
+    OpenRouter's free tier gets rate-limited per-model, not per-account, so a sibling free
+    model is often available even when the requested one isn't. Any other failure, or
+    exhausting every fallback, raises RuntimeError with a readable message.
     """
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY not set. Add it to webapp/.env.")
 
-    try:
-        data = _post(messages, model, api_key)
-    except urllib.error.HTTPError as e:
-        body_text = e.read().decode()
-        if e.code == 429:
-            wait = min(_retry_after_seconds(body_text) or 5, MAX_RATE_LIMIT_WAIT_SECONDS)
-            time.sleep(wait)
-            try:
-                data = _post(messages, model, api_key)
-            except urllib.error.HTTPError as retry_e:
-                raise RuntimeError(_format_error(retry_e.code, retry_e.read().decode())) from retry_e
-        else:
-            raise RuntimeError(_format_error(e.code, body_text)) from e
+    if model in FREE_MODEL_PRIORITY:
+        candidates = [model] + [m for m in FREE_MODEL_PRIORITY if m != model]
+    else:
+        candidates = [model]
 
-    _log_last_call(messages, model, data)
+    data = used_model = last_error = None
+    for candidate in candidates:
+        try:
+            data = _post_with_backoff(messages, candidate, api_key)
+            used_model = candidate
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                raise RuntimeError(_format_error(e.code, e.read().decode())) from e
+            last_error = e
+    if data is None:
+        raise RuntimeError(_format_error(last_error.code, last_error.read().decode())) from last_error
+
+    _log_last_call(messages, used_model, data)
 
     choice = data["choices"][0]
     content = choice["message"]["content"]
+    finish_reason = choice.get("finish_reason", "unknown")
     if content is None:
         # Seen with reasoning-heavy free models that exhaust their token budget
         # "thinking" before emitting a reply. Fail clearly instead of crashing
         # downstream on None; the caller can retry with a different model.
-        finish_reason = choice.get("finish_reason", "unknown")
         raise RuntimeError(
-            f"{model} returned no reply (finish_reason={finish_reason}). "
+            f"{used_model} returned no reply (finish_reason={finish_reason}). "
             "This can happen with reasoning models running out of budget before answering - "
             "try a different model from the dropdown."
         )
-    return content
+    if finish_reason == "length":
+        # content is non-None but was cut off mid-generation by the MAX_TOKENS cap - e.g. a
+        # reasoning model spent most of its budget "thinking" and ran out partway through the
+        # visible JSON reply. Downstream json.loads() would fail on this too, but with a
+        # confusing "malformed JSON" message that doesn't explain why; catching it here first
+        # gives a clear, specific error instead.
+        raise RuntimeError(
+            f"{used_model}'s reply was cut off before finishing (hit the {MAX_TOKENS}-token "
+            "limit). Try a shorter message, or a different model from the dropdown."
+        )
+    return content, used_model
 
 
 def send_message(message, model=DEFAULT_MODEL):
-    """Send a single user message and return the reply. Thin wrapper over send_chat."""
+    """Send a single user message, return (content, used_model). Thin wrapper over send_chat."""
     return send_chat([{"role": "user", "content": message}], model)
 
 
@@ -168,6 +229,19 @@ def _parse_json_reply(reply):
         raise RuntimeError(f"Could not parse the model's reply as JSON: {reply[:200]}") from e
 
 
+_CITATION_MARKER = re.compile(r"\s*\[Source\s+\d+\]")
+
+
+def strip_citations(text):
+    """Remove any '[Source N]' markers from artifact/answer text. The prompt already tells
+    the model citations belong only in the conversational reply, never here (see
+    src/prompts/*.txt) - free/small models don't always follow that reliably, so this is a
+    safety net, not the primary enforcement."""
+    if not text:
+        return text
+    return re.sub(r"[ \t]{2,}", " ", _CITATION_MARKER.sub("", text)).strip()
+
+
 # ---- tailoring chat -------------------------------------------------------
 
 TAILOR_PROMPT_FILES = {
@@ -175,6 +249,49 @@ TAILOR_PROMPT_FILES = {
     "resume": "resume.txt",
     "qa": "qa.txt",
 }
+
+
+def trim_history(history):
+    """Cap chat history to the last HISTORY_MAX_MESSAGES before sending to the model."""
+    return history[-HISTORY_MAX_MESSAGES:]
+
+
+def classify_turn(artifact_type, message, has_existing_content):
+    """Ask DEFAULT_MODEL (free) two things about this message in a single call: does
+    it need fresh RAG retrieval, and does it look like it might reveal a durable
+    style preference worth checking with revise_preferences? Combined into one
+    call, rather than a separate retrieval call plus a word-count check, to
+    minimize API calls per turn.
+
+    Neither question is answerable from word count alone: a brand-new qa question
+    ("Why us?") and pure feedback ("make it shorter") are both commonly short, but
+    only one needs new facts pulled in or could reveal nothing preference-worthy.
+    A real semantic read gets both right. Always makes this call, even on an
+    obvious first message, for consistency - it's free-tier, so the only real
+    cost is latency, not money.
+
+    Returns {"needs_retrieval": bool, "reveals_preference": bool}, defaulting both
+    to True if the call fails or the reply is unparseable - the safe direction for
+    both: doing the real thing when unsure never hurts correctness, it just costs
+    a bit more.
+    """
+    existing_state = (
+        "Some questions have already been answered for this job."
+        if artifact_type == "qa"
+        else "A draft already exists." if has_existing_content else "Nothing has been written yet."
+    )
+    prompt = _load_prompt("classify_turn.txt").format(
+        artifact_type=artifact_type, existing_state=existing_state, message=message
+    )
+    try:
+        reply, _used_model = send_chat([{"role": "user", "content": prompt}], DEFAULT_MODEL)
+        data = _parse_json_reply(reply)
+    except RuntimeError:
+        return {"needs_retrieval": True, "reveals_preference": True}
+    return {
+        "needs_retrieval": bool(data.get("needs_retrieval", True)),
+        "reveals_preference": bool(data.get("reveals_preference", True)),
+    }
 
 
 def build_retrieval_query(job, user_message):
@@ -200,12 +317,17 @@ def format_retrieved_context(chunks):
     )
 
 
-def build_tailor_system_prompt(artifact_type, job, profile, preferences, current_artifact_text, retrieved_context=""):
-    """Assemble the system prompt for one tailoring turn from the shared context + type-specific template.
+def build_tailor_system_prompt_parts(artifact_type, job, profile, preferences, current_artifact_text, retrieved_context=""):
+    """Build the tailoring system prompt as (cacheable, dynamic) parts instead of one string.
 
-    `preferences` is {category: text} for general/cover_letter/resume/qa.
-    `retrieved_context` is format_retrieved_context()'s output - the top-k chunks
-    for this turn's query, already numbered/scored (see store.retrieve_context()).
+    `cacheable` (job/profile/instructions/JSON-key spec) is identical across every turn of a
+    job+tab thread - see _build_system_content, which marks it as an Anthropic prompt-caching
+    breakpoint. `dynamic` (the current draft + this turn's retrieved context) changes every
+    turn and would never benefit from caching anyway, so it's kept separate and last.
+
+    `preferences` is {category: text} for general/cover_letter/resume/qa. `retrieved_context`
+    is format_retrieved_context()'s output - the top-k chunks for this turn's query, already
+    numbered/scored (see store.retrieve_context()).
     """
     context = _load_prompt("_context.txt").format(
         job_title=job["title"],
@@ -215,15 +337,33 @@ def build_tailor_system_prompt(artifact_type, job, profile, preferences, current
         profile_name=profile.get("name", "the candidate"),
         profile_roles=", ".join(profile.get("roles", [])) or "not specified",
         profile_home_address=profile.get("home_address", "not specified"),
-        retrieved_context=retrieved_context or "(nothing retrieved for this turn)",
         pref_general=preferences.get("general") or "(none yet)",
     )
     template = _load_prompt(TAILOR_PROMPT_FILES[artifact_type])
-    return template.format(
-        context=context,
-        pref_category=preferences.get(artifact_type) or "(none yet)",
-        current_artifact=current_artifact_text or "(none yet)",
+    cacheable = template.format(context=context, pref_category=preferences.get(artifact_type) or "(none yet)")
+
+    artifact_label = "Questions already answered for this job" if artifact_type == "qa" else "Current draft (empty if none written yet)"
+    dynamic = (
+        f"{artifact_label}:\n---\n{current_artifact_text or '(none yet)'}\n---\n\n"
+        f"Retrieved context for this turn:\n{retrieved_context or '(nothing retrieved for this turn)'}"
     )
+    return cacheable, dynamic
+
+
+def _build_system_content(cacheable, dynamic, model):
+    """The system message's `content`: a plain string for most models, or Anthropic's
+    content-block format with a cache_control breakpoint after `cacheable` for anthropic/*
+    models (see ANTHROPIC_MODEL_PREFIX) - OpenRouter passes this through to Anthropic's
+    prompt caching, discounting `cacheable` ~90% on repeat calls within its cache TTL. That
+    matters here because `cacheable` is identical across every turn of a regenerate loop on
+    the same job, while `dynamic` never repeats and wouldn't be cacheable anyway.
+    """
+    if not model.startswith(ANTHROPIC_MODEL_PREFIX):
+        return f"{cacheable}\n\n{dynamic}"
+    return [
+        {"type": "text", "text": cacheable, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": dynamic},
+    ]
 
 
 def run_tailor_turn(
@@ -238,12 +378,20 @@ def run_tailor_turn(
     the model - shape depends on artifact_type (cover_letter/resume: reply+
     artifact; qa: reply+action+question+answer).
     """
-    system_prompt = build_tailor_system_prompt(
+    cacheable, dynamic = build_tailor_system_prompt_parts(
         artifact_type, job, profile, preferences, current_artifact_text, retrieved_context
     )
-    messages = [{"role": "system", "content": system_prompt}, *history, {"role": "user", "content": user_message}]
-    reply = send_chat(messages, model)
-    return _parse_json_reply(reply)
+    system_content = _build_system_content(cacheable, dynamic, model)
+    messages = [{"role": "system", "content": system_content}, *history, {"role": "user", "content": user_message}]
+    reply, used_model = send_chat(messages, model)
+    data = _parse_json_reply(reply)
+    if data.get("artifact"):
+        data["artifact"] = strip_citations(data["artifact"])
+    if data.get("answer"):
+        data["answer"] = strip_citations(data["answer"])
+    if used_model != model and data.get("reply"):
+        data["reply"] = f"_(Note: {model} was rate-limited, so I used {used_model} for this reply.)_\n\n{data['reply']}"
+    return data
 
 
 # ---- cross-job preference learning ----------------------------------------
@@ -253,6 +401,10 @@ def revise_preferences(artifact_type, feedback, current_content, preferences, mo
 
     Pure function - no DB access. `preferences` is {category: text}. Returns
     None if nothing should change, otherwise {"category": ..., "text": ...}.
+    Runs on `model` - whatever the user picked for the main generation - rather
+    than a fixed model, so preference-learning never introduces a paid call the
+    user didn't choose: if they're running fully on free models, this stays
+    free too, keeping cost consistent with what they picked.
     """
     prompt = _load_prompt("preferences_update.txt").format(
         artifact_type=artifact_type,
@@ -261,7 +413,7 @@ def revise_preferences(artifact_type, feedback, current_content, preferences, mo
         pref_general=preferences.get("general") or "(none yet)",
         pref_category=preferences.get(artifact_type) or "(none yet)",
     )
-    reply = send_chat([{"role": "user", "content": prompt}], model)
+    reply, _used_model = send_chat([{"role": "user", "content": prompt}], model)
     data = _parse_json_reply(reply)
     if not data.get("changed"):
         return None

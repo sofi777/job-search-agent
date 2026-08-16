@@ -86,6 +86,13 @@ webapp/
 - **Knowledge base chunks** (`/chunks`): every chunk the uploaded documents were split
   into, grouped by source file, with token counts. A chunk-size field + "Re-run
   chunking" button re-chunks and re-embeds the entire knowledge base at a new size.
+- **Profile** (`/profile`): every onboarding answer, editable after the fact on one
+  page - roles, location/commute/remote/countries, industries + free-text
+  preferences, salary, and the resume/cover-letter-sample/story-bank documents.
+  Re-uploading a document replaces it as the knowledge base source of truth (same
+  behavior as onboarding); cover letter sample and story bank can also be removed
+  outright with no replacement. Re-uploading the resume asks whether to keep the
+  current roles/home address or regenerate them from the new resume.
 - **Editable ranking**: the weights behind the match score (role/location/salary/
   industry fit) are visible and editable at `/priority`
 - **On-demand scan**: "Run scan now" re-scores all jobs against the current profile
@@ -138,14 +145,50 @@ sends the job's chat history plus the new message, and parses a structured JSON
 reply (`{reply, artifact}` for cover_letter/resume; `{reply, action, question,
 answer}` for qa - the model decides new-question vs. feedback from context, no
 manual toggle needed). `app.py` persists the chat turn and artifact via `store.py`.
+The user's message is saved to the chat immediately, before any of the LLM calls
+that could fail - if one does (rate limit, JSON parse error), the message stays
+visible in the chat with the error shown above it, instead of silently vanishing
+and forcing a retype.
 
-**Cross-job preference learning**: after each feedback-driven turn,
-`revise_preferences()` makes a second, separate call asking whether the feedback
-revealed a durable style preference (vs. being specific to that one document), and
-if so returns the revised text for the right category. Preferences are stored as
-four plain-text fields (general, cover_letter, resume, qa - general applies
-everywhere, a category overrides it on conflict), editable directly at
-`/preferences`, which also shows the prior value after an auto-update.
+**Cross-job preference learning**: `revise_preferences()` makes a second, separate
+call asking whether a turn's feedback revealed a durable style preference (vs. being
+specific to that one document), and if so returns the revised text for the right
+category. Preferences are stored as four plain-text fields (general, cover_letter,
+resume, qa - general applies everywhere, a category overrides it on conflict),
+editable directly at `/preferences`, which also shows the prior value after an
+auto-update. Runs on whichever model the user picked for the main generation (not a
+fixed model) - so preference-learning never adds a paid call the user didn't choose;
+staying on free models keeps this free too. Skipped entirely on the first message for
+a tab (nothing to give feedback on yet) or when `classify_turn()` (see below) says
+this message doesn't look like it reveals a preference.
+
+**Cost-saving on regenerate turns**: iterating on a draft ("make it shorter",
+"regenerate") is the most common action in this app, so a few things are skipped
+when a turn doesn't need the full treatment. `agents.classify_turn()` makes a single
+free-tier classification call on `DEFAULT_MODEL` per turn, answering two questions
+at once (one call, not two, to minimize API calls): does this message need fresh RAG
+retrieval, and does it look like it might reveal a durable preference? Neither is
+answerable from word count: a brand-new qa question ("Why us?") and pure feedback
+("make it shorter") are both commonly short, but only one needs new facts or could
+reveal a preference - a real semantic read gets both right, for all three tabs.
+Always runs, even on an obvious first message, for consistency - free-tier, so the
+cost is latency, not money. Defaults both answers to "do the real thing" if the call
+fails or is ambiguous (the safe direction: doing it when unsure never hurts
+correctness, it just costs a bit more).
+- Retrieval is skipped when `needs_retrieval` is false - saves ~550 tokens/turn on
+  the main call.
+- `revise_preferences()` is skipped when `reveals_preference` is false (or there's
+  no existing draft/Q&A yet) - the bigger saving, since it's a full second API call.
+- Chat history sent to the model is capped to the last `HISTORY_MAX_MESSAGES` (~3
+  exchanges) - the current draft/Q&A list already carries the full up-to-date state
+  into every prompt, so older exchanges are mostly redundant for continuing edits.
+- For `anthropic/*` models, the system prompt is split into a stable prefix
+  (instructions/job/profile - identical across every turn of one job+tab thread) and
+  a per-turn dynamic suffix (current draft + this turn's retrieved context), with the
+  prefix marked via `cache_control` for Anthropic's prompt caching (`_build_system_content`)
+  - OpenRouter passes this through, discounting repeat input tokens ~90% within the
+    cache's TTL. Anthropic-only since `cache_control` is an Anthropic-specific extension;
+    other providers get the plain single-string prompt as before, unaffected.
 
 **Knowledge base documents**: come from three places - onboarding uploads (resume,
 cover letter sample, story bank - always profile-wide, reused on every job) and files

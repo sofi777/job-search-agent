@@ -505,6 +505,11 @@ def delete_document_chunks(document_id):
         conn.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
 
 
+def delete_document(document_id):
+    with db_transaction() as conn:
+        conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+
+
 def delete_all_chunks():
     with db_transaction() as conn:
         conn.execute("DELETE FROM chunks")

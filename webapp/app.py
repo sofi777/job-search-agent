@@ -207,6 +207,73 @@ def onboarding(step):
     )
 
 
+# ---- profile -------------------------------------------------------------
+
+@app.route("/profile", methods=["GET", "POST"])
+@login_required
+def profile_page():
+    if not store.profile["onboarding_complete"]:
+        return redirect(url_for("onboarding", step="resume"))
+
+    profile = store.profile
+    document_warnings = []
+
+    if request.method == "POST":
+        # Plain/list fields first - a resume "regenerate" action below may override roles/home_address.
+        profile["roles"] = [r.strip() for r in request.form.getlist("roles") if r.strip()]
+        profile["home_address"] = request.form.get("home_address", profile["home_address"])
+        profile["commute_miles"] = int(request.form.get("commute_miles") or 0)
+        profile["remote_ok"] = bool(request.form.get("remote_ok"))
+        profile["eligible_countries"] = [
+            store.normalize_country(c) or c for c in request.form.getlist("eligible_countries")
+        ]
+        profile["remote_countries"] = [
+            store.normalize_country(c) or c for c in request.form.getlist("remote_countries")
+        ]
+        profile["industries"] = request.form.getlist("industries")
+        profile["industries_text"] = request.form.get("industries_text", "")
+        profile["min_salary"] = int(request.form.get("min_salary") or 0)
+        profile["currency"] = request.form.get("currency", profile["currency"])
+
+        # Documents - re-uploading replaces the knowledge base source, same as onboarding.
+        resume_file = request.files.get("resume")
+        if resume_file and resume_file.filename:
+            filename = secure_filename(resume_file.filename)
+            warning = _save_optional_profile_document(resume_file, "resume", filename)
+            if warning:
+                document_warnings.append(warning)
+            else:
+                resume_file.save(store.UPLOADS_DIR / filename)
+                profile["resume_filename"] = filename
+                if request.form.get("resume_action") == "regenerate":
+                    profile["roles"] = ai.suggest_roles(filename)
+                    profile["home_address"] = ai.suggest_home_address(filename)
+
+        for doc_type in ("cover_letter_sample", "story_bank"):
+            if request.form.get(f"remove_{doc_type}"):
+                store.delete_profile_document(doc_type)
+            else:
+                warning = _save_optional_profile_document(request.files.get(doc_type), doc_type)
+                if warning:
+                    document_warnings.append(warning)
+
+        store.save_profile()
+        if not document_warnings:
+            return redirect(url_for("profile_page", saved=1))
+
+    profile_documents = {d["type"]: d["filename"] for d in store.get_profile_documents()}
+    return render_template(
+        "profile.html",
+        profile=profile,
+        profile_documents=profile_documents,
+        industry_options=store.INDUSTRY_OPTIONS,
+        currency_options=store.CURRENCY_OPTIONS,
+        countries=store.COUNTRIES,
+        document_warnings=document_warnings,
+        saved=request.args.get("saved"),
+    )
+
+
 # ---- dashboard ----------------------------------------------------------
 
 @app.route("/dashboard")
@@ -432,23 +499,42 @@ def tailor_message(job_id, tab):
             store.save_chat_attachment(job_id, attachment.filename, attachment_text, save_to_profile)
             display_message = f"\U0001F4CE {attachment.filename}\n{message}".strip()
 
-        history = store.get_chat(job_id, tab)
+        history = agents.trim_history(store.get_chat(job_id, tab))
         preferences = store.get_preferences()
 
-        retrieval_query = agents.build_retrieval_query(job, display_message)
-        retrieved_chunks = store.retrieve_context(job_id, retrieval_query, top_k=3)
-        retrieved_context = agents.format_retrieved_context(retrieved_chunks)
+        # Saved now, before any of the LLM calls below that could fail (rate limit, JSON parse
+        # error, etc.) - so the user's message is never lost if something downstream breaks.
+        # It'll show in the chat with no assistant reply after it and the error banner above,
+        # rather than silently vanishing and forcing a retype. history was already fetched
+        # above, so this doesn't duplicate into what gets sent to the model this turn.
+        store.add_chat_message(job_id, tab, "user", display_message, model)
 
         if tab == "qa":
             current_text = _qa_context_text(job_id)
         else:
             current_text = store.get_artifact_text(job_id, tab)
 
+        # One free-tier classification call covers both "does this need fresh retrieval" and
+        # "could this reveal a durable preference" - word count can't answer either reliably
+        # (a short qa message can be a brand-new question or pure feedback on the last answer,
+        # and length alone can't tell which) - see classify_turn.
+        classification = agents.classify_turn(tab, display_message, bool(current_text))
+        # First message for this tab never has a preference to reveal - nothing to give
+        # feedback ON yet - regardless of what the classifier says.
+        check_preferences = bool(current_text) and classification["reveals_preference"]
+
+        if classification["needs_retrieval"]:
+            retrieval_query = agents.build_retrieval_query(job, display_message)
+            retrieved_chunks = store.retrieve_context(job_id, retrieval_query, top_k=3)
+            retrieved_context = agents.format_retrieved_context(retrieved_chunks)
+        else:
+            retrieved_chunks = []
+            retrieved_context = "(not re-searched this turn - existing content covers this; rely on what's already here.)"
+
         result = agents.run_tailor_turn(
             tab, job, store.profile, preferences, history, current_text, display_message, model, retrieved_context
         )
 
-        store.add_chat_message(job_id, tab, "user", display_message, model)
         assistant_message_id = store.add_chat_message(job_id, tab, "assistant", result.get("reply", ""), model)
         store.save_citations(assistant_message_id, retrieved_chunks)
 
@@ -465,9 +551,10 @@ def tailor_message(job_id, tab):
                 store.save_artifact(job_id, tab, new_artifact)
             feedback_content = new_artifact or current_text
 
-        revision = agents.revise_preferences(tab, display_message, feedback_content, preferences, model)
-        if revision:
-            store.save_preference(revision["category"], revision["text"])
+        if check_preferences:
+            revision = agents.revise_preferences(tab, display_message, feedback_content, preferences, model)
+            if revision:
+                store.save_preference(revision["category"], revision["text"])
     except RuntimeError as e:
         session["tailor_error"] = str(e)
 

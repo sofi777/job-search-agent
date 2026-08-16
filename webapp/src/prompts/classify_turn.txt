@@ -1,0 +1,11 @@
+A user is chatting with an AI that's helping write a {artifact_type} for a job application. {existing_state}
+
+Their latest message: "{message}"
+
+Answer two questions about it:
+1. Does answering this well require searching the candidate's resume, writing samples, and story bank for new supporting facts, or is it a stylistic/editing instruction on existing content that doesn't need new facts?
+2. Does this message reveal a durable, general writing/style preference worth remembering for future documents (as opposed to being specific to this one document/job)?
+
+Reply with ONLY a JSON object, no markdown fences, no commentary, with exactly these keys:
+"needs_retrieval": true or false (question 1 - true if new facts are needed)
+"reveals_preference": true or false (question 2)

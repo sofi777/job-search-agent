@@ -7,4 +7,5 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.agents import send_message
 
 if __name__ == "__main__":
-    print(send_message("say hello"))
+    reply, used_model = send_message("say hello")
+    print(f"[{used_model}] {reply}")
