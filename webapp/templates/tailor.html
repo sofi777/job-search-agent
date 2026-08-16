@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}Tailor my application - {{ job.title }}{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<style>
+  .tailor-shell { display: flex; align-items: flex-start; gap: var(--space-6); }
+  .chat-col { flex: 1.3; display: flex; flex-direction: column; min-width: 0; }
+  .chat-messages { min-height: 320px; max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-4); padding: 4px 4px var(--space-4); }
+  .msg-row { display: flex; }
+  .msg-row.user { justify-content: flex-end; }
+  .msg-bubble { max-width: 78%; white-space: pre-line; line-height: 1.55; }
+  .msg-row.user .msg-bubble { background: var(--color-accent-100); color: var(--color-accent-800); padding: 10px 16px; border-radius: 18px 18px 4px 18px; }
+  .msg-row.assistant .msg-bubble { max-width: 100%; padding: 0; }
+  .chat-inputbar { display: flex; align-items: flex-end; gap: 8px; border: 1px solid var(--color-divider); border-radius: 22px; padding: 8px 8px 8px 16px; background: #fff; }
+  .chat-inputbar textarea { flex: 1; border: none; background: transparent; resize: none; min-height: 24px; max-height: 160px; font: inherit; font-size: 14px; padding: 6px 0; outline: none; }
+  .attach-btn { cursor: pointer; font-size: 18px; color: var(--color-neutral-700); padding: 6px; line-height: 1; }
+  .attach-chip { display: none; align-items: center; gap: 6px; background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: 14px; padding: 4px 6px 4px 10px; font-size: 12px; margin-bottom: 8px; align-self: flex-start; }
+  .attach-chip button { all: unset; cursor: pointer; color: var(--color-neutral-700); padding: 0 4px; }
+  .send-btn { background: var(--color-accent); color: #fff; border: none; border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; font-size: 16px; }
+  .send-btn:hover { background: var(--color-accent-600); }
+  .send-btn:disabled { opacity: 0.5; cursor: not-allowed; background: var(--color-accent); }
+  .chat-toolbar { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+  .preview-col { flex: 1; overflow-y: auto; min-width: 0; }
+  .typing-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--color-neutral-600); margin-right: 4px; animation: typing-bounce 1.2s infinite ease-in-out; }
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; margin-right: 0; }
+  @keyframes typing-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
+  .citation { all: unset; cursor: pointer; color: var(--color-accent); font-weight: 600; font-size: 12px; padding: 0 2px; }
+  .citation:hover { text-decoration: underline; }
+  #citation-dialog { max-width: 480px; }
+  #citation-dialog .kicker { margin-bottom: var(--space-2); }
+  #citation-dialog pre { white-space: pre-wrap; font: inherit; margin: 0; line-height: 1.5; }
+</style>
+
+<div class="container">
+  <a href="{{ url_for('job_detail', job_id=job.id) }}" class="text-muted" style="text-decoration:none;">&larr; Back to {{ job.title }}</a>
+  <h1 style="margin-top:var(--space-4);">Tailor my application</h1>
+  <p class="text-muted">{{ job.title }} at {{ job.company }}</p>
+
+  {% if error %}
+  <div class="tag tag-outline" style="display:block;padding:var(--space-3);margin-bottom:var(--space-3);">{{ error }}</div>
+  {% endif %}
+
+  <div style="display:flex;gap:8px;margin:var(--space-4) 0;border-bottom:2px solid var(--color-divider);">
+    {% for key, label in tab_labels.items() %}
+    <a href="{{ url_for('tailor', job_id=job.id, tab=key) }}"
+       class="btn {{ 'btn-secondary active' if key == tab else 'btn-ghost' }}"
+       style="border-radius:0;">{{ label }}</a>
+    {% endfor %}
+  </div>
+
+  <div class="tailor-shell">
+
+    <div class="chat-col">
+      <div class="chat-messages" id="chat-messages">
+        {% for m in chat %}
+        <div class="msg-row {{ m.role }}">
+          <div class="msg-bubble">{{ m.rendered }}</div>
+        </div>
+        {% else %}
+        <div class="text-muted">{{ 'Paste an application question to get started.' if tab == 'qa' else 'Type a message to draft the first version.' }}</div>
+        {% endfor %}
+      </div>
+
+      <form method="post" action="{{ url_for('tailor_message', job_id=job.id, tab=tab) }}" enctype="multipart/form-data" id="chat-form">
+        <div class="attach-chip" id="attach-chip">
+          <span id="attach-name"></span>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input type="checkbox" name="save_to_profile" id="save-to-profile">
+            Save for all jobs
+          </label>
+          <button type="button" onclick="clearAttachment()">&times;</button>
+        </div>
+        <div class="chat-inputbar">
+          <label for="attachment-input" class="attach-btn" title="Attach a file">&#128206;</label>
+          <input type="file" id="attachment-input" name="attachment" accept=".pdf,.docx,.txt,.md" hidden onchange="showAttachment()">
+          <textarea name="message" id="chat-input" rows="1"
+            placeholder="{{ 'Paste an application question…' if tab == 'qa' else 'Message…' }}"></textarea>
+          <button type="submit" class="send-btn" id="send-btn" title="Send">&uarr;</button>
+        </div>
+        <div class="chat-toolbar">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <select name="model" class="input" style="width:auto;min-height:28px;font-size:12px;">
+              {% for m in models %}
+              <option value="{{ m }}" {{ 'selected' if m == default_model else '' }}>{{ m }}</option>
+              {% endfor %}
+            </select>
+            <a href="https://openrouter.ai/models" target="_blank" rel="noopener" class="text-muted" style="font-size:12px;">Browse models &rarr;</a>
+          </div>
+        </div>
+      </form>
+    </div>
+
+    <div class="preview-col">
+      <h2 style="font-size:16px;">Preview</h2>
+      {% if tab == 'qa' %}
+        {% if qa_list %}
+        <div style="display:flex;flex-direction:column;gap:var(--space-3);">
+          {% for item in qa_list %}
+          <div style="border:1px solid var(--color-divider);padding:var(--space-3);">
+            <div style="font-weight:600;margin-bottom:6px;">{{ item.question_text }}</div>
+            <div id="qa-answer-{{ item.id }}" style="white-space:pre-line;line-height:1.6;">{{ item.content }}</div>
+            <button type="button" class="btn btn-ghost btn-small" onclick="copyText('qa-answer-{{ item.id }}')" style="margin-top:6px;">Copy</button>
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-muted">No questions answered yet.</div>
+        {% endif %}
+      {% else %}
+        {% if artifact_text %}
+        <div id="artifact-text" style="border:1px solid var(--color-divider);padding:var(--space-3);white-space:pre-line;line-height:1.6;min-height:200px;">{{ artifact_text }}</div>
+        <button type="button" class="btn btn-secondary" onclick="copyText('artifact-text')" style="margin-top:var(--space-3);">Copy</button>
+        {% else %}
+        <div class="text-muted">Nothing generated yet.</div>
+        {% endif %}
+      {% endif %}
+    </div>
+
+  </div>
+
+  <dialog id="citation-dialog">
+    <div class="kicker" id="citation-source"></div>
+    <p class="text-muted" id="citation-meta" style="margin-bottom:var(--space-3);"></p>
+    <pre id="citation-text"></pre>
+    <div style="display:flex;justify-content:flex-end;margin-top:var(--space-4);">
+      <button type="button" class="btn btn-secondary" onclick="document.getElementById('citation-dialog').close()">Close</button>
+    </div>
+  </dialog>
+</div>
+
+<script>
+function copyText(id) {
+  navigator.clipboard.writeText(document.getElementById(id).innerText);
+}
+
+function showAttachment() {
+  const input = document.getElementById('attachment-input');
+  const chip = document.getElementById('attach-chip');
+  if (input.files.length) {
+    document.getElementById('attach-name').textContent = '\u{1F4CE} ' + input.files[0].name;
+    chip.style.display = 'flex';
+  }
+}
+
+function clearAttachment() {
+  document.getElementById('attachment-input').value = '';
+  document.getElementById('save-to-profile').checked = false;
+  document.getElementById('attach-chip').style.display = 'none';
+}
+
+const chatInput = document.getElementById('chat-input');
+const chatForm = document.getElementById('chat-form');
+const messagesEl = document.getElementById('chat-messages');
+
+chatInput.addEventListener('input', () => {
+  chatInput.style.height = 'auto';
+  chatInput.style.height = chatInput.scrollHeight + 'px';
+});
+chatInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    const hasAttachment = document.getElementById('attachment-input').files.length > 0;
+    if (!chatInput.value.trim() && !hasAttachment) return;
+    chatForm.requestSubmit(); // (not .submit() - that skips the 'submit' event below)
+  }
+});
+
+// Instant feedback: the whole flow is a full-page POST/redirect, so there's a real gap
+// between hitting send and the new page arriving. Show the user's message and a
+// "thinking" indicator right away; the page reload that follows replaces this with
+// the real, persisted result.
+chatForm.addEventListener('submit', () => {
+  const text = chatInput.value.trim();
+  const hasAttachment = document.getElementById('attachment-input').files.length > 0;
+  if (!text && !hasAttachment) return;
+
+  const emptyState = messagesEl.querySelector('.text-muted');
+  if (emptyState) emptyState.remove();
+
+  if (text) {
+    const userRow = document.createElement('div');
+    userRow.className = 'msg-row user';
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.textContent = text;
+    userRow.appendChild(bubble);
+    messagesEl.appendChild(userRow);
+  }
+
+  const thinkingRow = document.createElement('div');
+  thinkingRow.className = 'msg-row assistant';
+  thinkingRow.innerHTML = '<div class="msg-bubble"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>';
+  messagesEl.appendChild(thinkingRow);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  document.getElementById('send-btn').disabled = true;
+});
+
+messagesEl.scrollTop = messagesEl.scrollHeight;
+
+// Citations: [Source N] renders server-side as a <button class="citation" data-*>; clicking
+// it shows the actual retrieved chunk + similarity score in a native <dialog> popup.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.citation');
+  if (!btn) return;
+  document.getElementById('citation-source').textContent = 'Source ' + btn.dataset.source;
+  document.getElementById('citation-meta').textContent = btn.dataset.filename + ' • similarity ' + btn.dataset.score;
+  document.getElementById('citation-text').textContent = btn.dataset.text;
+  document.getElementById('citation-dialog').showModal();
+});
+</script>
+{% endblock %}

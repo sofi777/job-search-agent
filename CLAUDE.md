@@ -24,7 +24,7 @@
 - 🚪 **`app.py`** - Flask App entry point
 - 🖼️ **`templates/`** - front end
 - 🗄️ **`data/`** - all app data
-- 💾 **`data/app.db`** - SQLite database, user profile + per-job progress
+- 💾 **`data/app.db`** - SQLite database, user profile + jobs + per-job progress
 - ⚙️ **`src/`** - backend logic
 - 🧪 **`scripts/`** - quick scripting
 - ✅ **`tests/`** - unit tests

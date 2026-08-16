@@ -10,8 +10,12 @@
       <div class="text-muted">
         {{ '%d new since your last visit' % new_count if new_count else 'All caught up' }} &middot; Last scanned {{ last_scan }}
       </div>
+      {% if add_job_success %}
+      <div style="margin-top:6px;font-size:13px;padding:6px 10px;border:1px solid var(--color-divider);background:var(--color-surface);display:inline-block;">{{ add_job_success }}</div>
+      {% endif %}
     </div>
     <div style="display:flex;gap:8px;">
+      <button type="button" class="btn btn-primary" onclick="document.getElementById('add-job-dialog').showModal()">Add Job Posting</button>
       <form method="post" action="{{ url_for('reload_data') }}">
         <button type="submit" class="btn btn-secondary" title="Re-read data/jobs.json from disk">Reload sample data</button>
       </form>
@@ -20,6 +24,27 @@
       </form>
     </div>
   </div>
+
+  <dialog id="add-job-dialog">
+    <form method="post" action="{{ url_for('job_add') }}">
+      <h3 style="margin-top:0;">Add a job posting</h3>
+      <p class="text-muted" style="font-size:13px;">Paste a link to a job posting. We'll fetch it and fill in the details. It won't have a match score until the next scan.</p>
+      {% if add_job_error %}
+      <p style="color:var(--color-accent);font-size:13px;">{{ add_job_error }}</p>
+      {% endif %}
+      <div class="field">
+        <label for="job_url">Job posting URL</label>
+        <input class="input" id="job_url" name="url" type="url" placeholder="https://..." required autofocus>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:var(--space-3);">
+        <button type="button" class="btn btn-ghost" onclick="document.getElementById('add-job-dialog').close()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add job</button>
+      </div>
+    </form>
+  </dialog>
+  {% if add_job_error %}
+  <script>document.getElementById('add-job-dialog').showModal();</script>
+  {% endif %}
 
   <form method="get" class="toolbar">
     <input type="hidden" name="sort" value="{{ sort_key }}">
@@ -64,7 +89,11 @@
           </td>
           <td style="white-space:nowrap;">{{ job.posted }}</td>
           <td style="white-space:nowrap;">
-            <span class="tag {{ 'tag-outline' if job.get('match', 0) >= 85 else 'tag-neutral' }}">{{ job.get('match', 0) }}% match</span>
+            {% if job.match is defined and job.match is not none %}
+            <span class="tag {{ 'tag-outline' if job.match >= 85 else 'tag-neutral' }}">{{ job.match }}% match</span>
+            {% else %}
+            <span class="tag tag-neutral">Not yet ranked</span>
+            {% endif %}
           </td>
           <td>
             <form method="post" action="{{ url_for('job_status', job_id=job.id) }}">
@@ -82,8 +111,7 @@
           </td>
           <td style="white-space:nowrap;">
             <div style="display:flex;gap:6px;">
-              <a href="{{ url_for('job_document', job_id=job.id, doc_type='cover-letter') }}" class="btn btn-secondary btn-small" title="Generate cover letter">Letter</a>
-              <a href="{{ url_for('job_document', job_id=job.id, doc_type='resume') }}" class="btn btn-secondary btn-small" title="Generate tailored resume">Resume</a>
+              <a href="{{ url_for('tailor', job_id=job.id) }}" class="btn btn-secondary btn-small" title="Tailor my application">Tailor</a>
             </div>
           </td>
         </tr>

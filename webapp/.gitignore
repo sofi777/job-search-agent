@@ -1,3 +1,6 @@
+# Secrets
+.env
+
 # Python
 __pycache__/
 *.pyc
@@ -16,6 +19,12 @@ data/uploads/*
 
 # SQLite database (user + progress state, not sample data)
 data/app.db
+
+# Chroma vector store (RAG chunk embeddings, rebuilt from data/app.db's documents table)
+data/chroma/
+
+# Debug: full prompt/response of the last LLM call (see src/agents.py _log_last_call)
+data/last_llm_call.json
 
 # OS / editor
 .DS_Store

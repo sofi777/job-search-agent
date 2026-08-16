@@ -10,7 +10,11 @@
   <p class="text-muted">{{ job.company }} &middot; {{ job.location }}</p>
 
   <div style="display:flex;gap:8px;margin:var(--space-3) 0;">
-    <span class="tag tag-outline">{{ job.get('match', 0) }}% match</span>
+    {% if job.match is defined and job.match is not none %}
+    <span class="tag tag-outline">{{ job.match }}% match</span>
+    {% else %}
+    <span class="tag tag-neutral">Not yet ranked</span>
+    {% endif %}
     <span class="tag {{ 'tag-accent' if job.status == 'new' else 'tag-neutral' }}">{{ job.status|capitalize }}</span>
   </div>
   <div class="hr"></div>
@@ -19,8 +23,7 @@
   <p style="white-space:pre-line;line-height:1.6;">{{ job.description }}</p>
 
   <div style="display:flex;gap:8px;margin-top:var(--space-6);flex-wrap:wrap;">
-    <a href="{{ url_for('job_document', job_id=job.id, doc_type='cover-letter') }}" class="btn btn-primary">Generate cover letter</a>
-    <a href="{{ url_for('job_document', job_id=job.id, doc_type='resume') }}" class="btn btn-secondary">Generate tailored resume</a>
+    <a href="{{ url_for('tailor', job_id=job.id) }}" class="btn btn-primary">Tailor my application</a>
     <a href="{{ job.url }}" target="_blank" rel="noopener" class="btn btn-secondary">Apply on source site</a>
     <div style="flex:1;"></div>
     <form method="post" action="{{ url_for('job_apply', job_id=job.id) }}">

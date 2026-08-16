@@ -10,6 +10,9 @@
     {% if error %}
     <p style="color:var(--color-accent);font-size:13px;margin-bottom:var(--space-3);">{{ error }}</p>
     {% endif %}
+    {% for warning in document_warnings %}
+    <p style="color:var(--color-accent);font-size:13px;margin-bottom:var(--space-3);">{{ warning }} - try a different file, or Continue again to skip it.</p>
+    {% endfor %}
 
     <form method="post" enctype="multipart/form-data">
       <div class="dropzone {{ 'filled' if profile.resume_filename else '' }}">
@@ -17,8 +20,27 @@
           {{ profile.resume_filename or 'Choose your resume' }}
         </div>
         <div class="text-muted">PDF or DOCX, up to 10MB{{ ' (already on file, re-upload to replace it)' if profile.resume_filename else '' }}</div>
-        <input type="file" name="resume" accept=".pdf,.doc,.docx" {{ 'required' if not profile.resume_filename else '' }} style="margin-top:8px;">
+        <input type="file" name="resume" accept=".pdf,.docx" {{ 'required' if not profile.resume_filename else '' }} style="margin-top:8px;">
       </div>
+
+      <p class="text-muted" style="margin:var(--space-4) 0 var(--space-2);">Optional - improves every draft, reused across every job:</p>
+
+      <div class="field">
+        <label>A cover letter you've written before</label>
+        <div class="dropzone {{ 'filled' if profile_documents.get('cover_letter_sample') else '' }}" style="padding:var(--space-3);">
+          <div class="text-muted">{{ profile_documents.get('cover_letter_sample') or 'PDF, DOCX, or TXT' }}{{ ' (already on file, re-upload to replace it)' if profile_documents.get('cover_letter_sample') else '' }}</div>
+          <input type="file" name="cover_letter_sample" accept=".pdf,.docx,.txt,.md" style="margin-top:8px;">
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Story bank (achievements, STAR stories, a "brag document" - whatever you've got). Separate each story with a blank line - each one becomes its own retrievable chunk.</label>
+        <div class="dropzone {{ 'filled' if profile_documents.get('story_bank') else '' }}" style="padding:var(--space-3);">
+          <div class="text-muted">{{ profile_documents.get('story_bank') or 'PDF, DOCX, or TXT' }}{{ ' (already on file, re-upload to replace it)' if profile_documents.get('story_bank') else '' }}</div>
+          <input type="file" name="story_bank" accept=".pdf,.docx,.txt,.md" style="margin-top:8px;">
+        </div>
+      </div>
+
       <div class="wizard-actions end">
         <button type="submit" class="btn btn-primary">Continue</button>
       </div>

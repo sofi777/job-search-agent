@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Knowledge base chunks - Dream Job Landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<div class="container">
+  <h1>Knowledge base chunks</h1>
+  <p class="text-muted">Every chunk your uploaded documents were split into for retrieval - see exactly what the model can find and cite.</p>
+
+  {% if error %}
+  <div class="tag tag-outline" style="display:block;padding:var(--space-3);margin-bottom:var(--space-3);">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" style="display:flex;align-items:flex-end;gap:8px;margin:var(--space-4) 0;">
+    <div class="field" style="margin-bottom:0;">
+      <label>Chunk size (tokens)</label>
+      <input type="number" name="chunk_size" class="input" value="{{ chunk_size }}" min="16" style="width:120px;">
+    </div>
+    <button type="submit" class="btn btn-primary">Re-run chunking</button>
+    <span class="text-muted">Re-chunks and re-embeds every document in the knowledge base with this size.</span>
+  </form>
+
+  <div class="hr"></div>
+
+  {% if not chunks %}
+  <div class="text-muted" style="padding:var(--space-6) 0;">No documents uploaded yet - nothing to chunk.</div>
+  {% endif %}
+
+  {% set ns = namespace(current_doc=None, first=true) %}
+  {% for c in chunks %}
+    {% if c.filename != ns.current_doc %}
+      {% if not ns.first %}</div>{% endif %}
+      {% set ns.current_doc = c.filename %}
+      {% set ns.first = false %}
+      <h2 style="font-size:16px;margin-top:var(--space-6);">{{ c.filename }}</h2>
+      <p class="text-muted" style="margin-bottom:var(--space-3);">{{ c.doc_type }} &middot; {{ c.scope }}</p>
+      <div style="display:flex;flex-direction:column;gap:var(--space-2);">
+    {% endif %}
+    <div style="border:1px solid var(--color-divider);padding:var(--space-3);">
+      <div class="text-muted" style="margin-bottom:6px;">Chunk {{ c.chunk_index + 1 }} &middot; {{ c.token_count }} tokens</div>
+      <div style="white-space:pre-line;line-height:1.55;">{{ c.text }}</div>
+    </div>
+  {% endfor %}
+  {% if chunks %}</div>{% endif %}
+</div>
+{% endblock %}

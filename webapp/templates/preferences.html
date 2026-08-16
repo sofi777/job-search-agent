@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Preferences - Dream Job Landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<style>
+  .prefs-grid { display: grid; grid-template-columns: 1.2fr 1.2fr 1.2fr 0.7fr; gap: var(--space-4); align-items: stretch; }
+  .prefs-col { display: flex; flex-direction: column; min-width: 0; }
+  .prefs-col textarea.input { flex: 1; min-height: 60vh; resize: vertical; }
+  @media (max-width: 900px) {
+    .prefs-grid { grid-template-columns: 1fr; }
+    .prefs-col textarea.input { min-height: 240px; }
+  }
+</style>
+
+<div class="container">
+  <h1>Writing preferences</h1>
+  <p class="text-muted">Learned from your feedback across jobs, and editable directly. General applies everywhere; a category-specific note overrides general when they conflict.</p>
+
+  <form method="post">
+    <div class="prefs-grid">
+      {% for category, label in [('general', 'General'), ('cover_letter', 'Cover Letter'), ('resume', 'Resume'), ('qa', 'Q&A')] %}
+      <div class="prefs-col">
+        <label>{{ label }}</label>
+        <textarea class="input" name="{{ category }}">{{ prefs.get(category, {}).get('text', '') }}</textarea>
+        {% set prev = prefs.get(category, {}).get('previous_text') %}
+        {% if prev and prev != prefs.get(category, {}).get('text', '') %}
+        <div class="text-muted" style="margin-top:4px;">Previously: {{ prev }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <button type="submit" class="btn btn-primary" style="margin-top:var(--space-4);">Save</button>
+  </form>
+</div>
+{% endblock %}
