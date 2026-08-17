@@ -187,6 +187,11 @@ different models different feedback. `session_message()` syncs `chat_sessions.mo
 if the pane's dropdown changed, then runs `_run_pane_turn()` for that pane alone. A
 `RuntimeError` from it (rate limit, JSON parse error) is caught and shown as that
 pane's own error (`session["tailor_errors"]`, keyed by session id), same as before.
+Removing a pane (`POST .../session/<id>/remove`) hides it (`chat_sessions.hidden`)
+rather than deleting it - its chat/artifact history stays in the DB. If a still-empty
+pane's model dropdown is then switched to that same model, `store.switch_session_model()`
+resurfaces the hidden session (and deletes the empty one) instead of starting a fresh
+blank thread, so re-adding a removed model picks up where it left off.
 `src/rag.py`'s lazily-initialized embedder/Chroma client are still guarded by a lock
 (`_init_lock`) - Flask's dev server can still handle more than one request at a time
 (e.g. two pane sends fired close together in separate tabs), and two threads hitting

@@ -56,6 +56,8 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
 `/onboarding/<step>` (wizard) -> `/dashboard` -> `/jobs/<id>` -> `/jobs/<id>/tailor/<tab>`
 (any number of compare panes, each fully self-contained - own chat + artifact + send
 button; `POST /jobs/<id>/tailor/<tab>/session/<session_id>/message` sends to one
-pane only, `POST /jobs/<id>/tailor/<tab>/sessions` adds a pane). Settings pages:
+pane only, `POST /jobs/<id>/tailor/<tab>/sessions` adds a pane, `POST
+/jobs/<id>/tailor/<tab>/session/<session_id>/remove` hides one - its history can be
+resurfaced by re-adding the same model). Settings pages:
 `/profile`, `/preferences`, `/priority`, `/chunks`, `/results`,
 `/usage`. Rating a response: `POST /messages/<id>/rate`.

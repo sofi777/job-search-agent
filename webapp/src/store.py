@@ -204,6 +204,28 @@ def set_session_model(session_id, model):
     db.update_chat_session_model(session_id, model)
 
 
+def switch_session_model(session_id, job_id, chat_type, model):
+    """Change a pane's model - normally just updates it in place. But if this pane is still
+    empty (no messages sent yet) and a previously removed pane for this same job+tab+model
+    still has history sitting hidden, resurface that pane instead of starting a fresh blank
+    one - see remove_chat_session. Returns the session id the caller should actually use for
+    this turn (usually session_id itself, unchanged)."""
+    if model:
+        hidden_match = db.find_hidden_chat_session(job_id, chat_type, model)
+        if hidden_match and not db.fetch_chat_messages(session_id):
+            db.delete_chat_session(session_id)
+            db.unhide_chat_session(hidden_match)
+            return hidden_match
+    db.update_chat_session_model(session_id, model)
+    return session_id
+
+
+def remove_chat_session(session_id):
+    """Hide a pane rather than deleting it - its chat/artifact history is kept, and picking
+    the same model again in a new pane resurfaces it (see switch_session_model)."""
+    db.hide_chat_session(session_id)
+
+
 # ---- tailoring chat / artifacts / preferences ----------------------------
 
 def get_chat(session_id):

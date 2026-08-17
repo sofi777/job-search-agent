@@ -128,7 +128,8 @@ def init_db():
                 job_id INTEGER NOT NULL,
                 type TEXT NOT NULL,
                 model TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                hidden INTEGER NOT NULL DEFAULT 0
             )
         """)
         conn.execute("""
@@ -264,6 +265,13 @@ def init_db():
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN session_id INTEGER")
             except sqlite3.OperationalError:
                 pass  # already migrated
+
+        # Migration: "remove pane" hides rather than deletes a session, so its history can be
+        # resurfaced later by picking the same model again (see find_hidden_chat_session).
+        try:
+            conn.execute("ALTER TABLE chat_sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # already migrated
 
         # Backfill: every pre-existing (job_id, type) thread becomes its own Session 1 - the
         # single shared thread that used to be the whole feature just becomes the first pane.
@@ -467,10 +475,12 @@ def create_chat_session(job_id, chat_type, model, created_at):
 
 
 def fetch_chat_sessions(job_id, chat_type):
-    """This job+tab's panes, in the order they were added (oldest/leftmost first)."""
+    """This job+tab's visible (non-hidden) panes, in the order they were added
+    (oldest/leftmost first). See hide_chat_session for what "hidden" means."""
     with db_transaction() as conn:
         rows = conn.execute(
-            "SELECT id, job_id, type, model, created_at FROM chat_sessions WHERE job_id = ? AND type = ? ORDER BY id",
+            "SELECT id, job_id, type, model, created_at FROM chat_sessions "
+            "WHERE job_id = ? AND type = ? AND hidden = 0 ORDER BY id",
             (job_id, chat_type),
         ).fetchall()
     return [dict(r) for r in rows]
@@ -487,6 +497,38 @@ def update_chat_session_model(session_id, model):
     the next send until a model is picked again)."""
     with db_transaction() as conn:
         conn.execute("UPDATE chat_sessions SET model = ? WHERE id = ?", (model, session_id))
+
+
+def hide_chat_session(session_id):
+    """"Remove pane" - hides it from fetch_chat_sessions rather than deleting it, so its chat/
+    artifact history survives. Picking the same model again in a fresh pane resurfaces it, see
+    find_hidden_chat_session + unhide_chat_session."""
+    with db_transaction() as conn:
+        conn.execute("UPDATE chat_sessions SET hidden = 1 WHERE id = ?", (session_id,))
+
+
+def unhide_chat_session(session_id):
+    with db_transaction() as conn:
+        conn.execute("UPDATE chat_sessions SET hidden = 0 WHERE id = ?", (session_id,))
+
+
+def find_hidden_chat_session(job_id, chat_type, model):
+    """Most recently removed pane for this job+tab+model, if any - see unhide_chat_session."""
+    with db_transaction() as conn:
+        row = conn.execute(
+            "SELECT id FROM chat_sessions WHERE job_id = ? AND type = ? AND model = ? AND hidden = 1 "
+            "ORDER BY id DESC LIMIT 1",
+            (job_id, chat_type, model),
+        ).fetchone()
+    return row["id"] if row else None
+
+
+def delete_chat_session(session_id):
+    """Hard delete - only ever called on a pane that's still empty (no messages sent yet), to
+    clean up the blank session left behind when switching a fresh pane's model resurfaces a
+    hidden one instead (see store.switch_session_model)."""
+    with db_transaction() as conn:
+        conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
 
 
 _CHAT_MESSAGE_COLUMNS = (

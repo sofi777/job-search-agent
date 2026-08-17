@@ -515,6 +515,17 @@ def add_chat_session(job_id, tab):
     return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
 
+@app.route("/jobs/<int:job_id>/tailor/<tab>/session/<int:session_id>/remove", methods=["POST"])
+@login_required
+def remove_chat_session(job_id, tab, session_id):
+    """Hides the pane, not deletes it - picking the same model again in a new pane resurfaces
+    its chat/artifact history (see store.switch_session_model)."""
+    chat_session = store.get_chat_session(session_id)
+    if chat_session and chat_session["job_id"] == job_id and chat_session["type"] == tab:
+        store.remove_chat_session(session_id)
+    return redirect(url_for("tailor", job_id=job_id, tab=tab))
+
+
 def _run_pane_turn(chat_session, job, display_message, preferences):
     """Run one full turn (classify -> retrieve -> generate -> persist) for one pane's own
     thread. Returns None on success or an error message string on failure, for the caller to
@@ -608,11 +619,13 @@ def session_message(job_id, tab, session_id):
     save_to_profile = bool(request.form.get("save_to_profile"))
 
     # The dropdown may have changed since this pane was last rendered - sync it either way,
-    # even on an empty send (switching to/from N/A alone is a valid action).
+    # even on an empty send (switching to/from N/A alone is a valid action). If this pane is
+    # still empty, this may resurface a previously removed pane's history instead of just
+    # updating session_id in place - see store.switch_session_model.
     submitted_model = request.form.get("model") or None
     if submitted_model != chat_session["model"]:
-        store.set_session_model(session_id, submitted_model)
-        chat_session["model"] = submitted_model
+        session_id = store.switch_session_model(session_id, job_id, tab, submitted_model)
+        chat_session = store.get_chat_session(session_id)
 
     if not message and not (attachment and attachment.filename):
         return redirect(url_for("tailor", job_id=job_id, tab=tab))
