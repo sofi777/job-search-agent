@@ -19,7 +19,6 @@
 - update the `README.md` whenever a new feature is added
 - Do not do browser testing (like playwright) unless i explicitly tell you to
 - Ask me questions before implementing if you are not sure, have missing information
-- Commit and push after each logical change once it's tested - one coherent change per commit
 - if you see repeated code, consolidate
 - put things in variables and dont' repeat names
 - one llm-based module used for anything that needs llm (`webapp/src/agents.py`)
