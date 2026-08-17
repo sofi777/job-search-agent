@@ -89,6 +89,13 @@ def _load_env():
 _load_env()
 
 
+class UnusableReply(RuntimeError):
+    """The API call itself succeeded, but the reply can't be used as-is (unparseable JSON, cut
+    off by the token cap, or empty). Distinct from a plain RuntimeError (HTTP/config/rate-limit
+    failures) so callers can retry only this kind - retrying an HTTP error wouldn't help and
+    would just burn more of a capped budget for nothing."""
+
+
 def _format_error(status, body_text):
     try:
         error = json.loads(body_text)["error"]
@@ -248,7 +255,7 @@ def send_chat(messages, model=DEFAULT_MODEL):
         # Seen with reasoning-heavy free models that exhaust their token budget
         # "thinking" before emitting a reply. Fail clearly instead of crashing
         # downstream on None; the caller can retry with a different model.
-        raise RuntimeError(
+        raise UnusableReply(
             f"{used_model} returned no reply (finish_reason={finish_reason}). "
             "This can happen with reasoning models running out of budget before answering - "
             "try a different model from the dropdown."
@@ -259,7 +266,7 @@ def send_chat(messages, model=DEFAULT_MODEL):
         # visible JSON reply. Downstream json.loads() would fail on this too, but with a
         # confusing "malformed JSON" message that doesn't explain why; catching it here first
         # gives a clear, specific error instead.
-        raise RuntimeError(
+        raise UnusableReply(
             f"{used_model}'s reply was cut off before finishing (hit the {MAX_TOKENS}-token "
             "limit). Try a shorter message, or a different model from the dropdown."
         )
@@ -282,10 +289,38 @@ def _load_prompt(name):
 
 
 def _parse_json_reply(reply):
+    text = strip_json_fence(reply)
     try:
-        return json.loads(strip_json_fence(reply))
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"Could not parse the model's reply as JSON: {reply[:200]}") from e
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Some models add commentary before/after the JSON object despite being told not to -
+    # try the outermost {...} span before giving up, rather than failing on stray prose alone.
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    raise UnusableReply(f"Could not parse the model's reply as JSON: {reply[:200]}")
+
+
+JSON_RETRY_NUDGE = (
+    "Your last reply wasn't usable - it was either not valid JSON, left the artifact/answer "
+    "field empty, or ran out of space before finishing. Reply again with ONLY the JSON object "
+    "described earlier, no other text before or after it, no extended reasoning first, and "
+    "keep the reply field brief so there's room to fit the full artifact/answer content."
+)
+
+
+def _tailor_reply_incomplete(artifact_type, data, current_artifact_text):
+    """True if the model returned parseable JSON but skipped the actual content - e.g. left
+    artifact/answer empty on what should have been a first draft. Seen intermittently across
+    models (not just one), so this is checked generically rather than special-cased per model.
+    """
+    if artifact_type == "qa":
+        return data.get("action") == "new_question" and not data.get("answer")
+    return not current_artifact_text and not data.get("artifact")
 
 
 _CITATION_MARKER = re.compile(r"\s*\[Source\s+\d+\]")
@@ -444,8 +479,23 @@ def run_tailor_turn(
     )
     system_content = _build_system_content(cacheable, dynamic, model)
     messages = [{"role": "system", "content": system_content}, *history, {"role": "user", "content": user_message}]
-    reply, used_model, usage = send_chat(messages, model)
-    data = _parse_json_reply(reply)
+    try:
+        reply, used_model, usage = send_chat(messages, model)
+        data = _parse_json_reply(reply)
+        if _tailor_reply_incomplete(artifact_type, data, current_artifact_text):
+            raise UnusableReply(f"{model} left the artifact/answer field empty on what should have been a first draft.")
+    except UnusableReply:
+        # One retry with an explicit correction, same model - no prompt wording is 100%
+        # reliable across every model (seen intermittently as prose instead of JSON, JSON with
+        # an empty artifact, and replies cut off by the token cap before finishing), so this
+        # self-corrects generically instead of hardcoding a workaround for one provider. Plain
+        # RuntimeErrors (HTTP/config/rate-limit failures) are not caught here - retrying those
+        # wouldn't help and would just spend more of a capped budget for nothing.
+        retry_messages = messages + [{"role": "user", "content": JSON_RETRY_NUDGE}]
+        # send_chat logs usage for both calls independently (see _log_usage) - usage here just
+        # needs to reflect the reply actually used, so the retry's usage replaces, not merges.
+        reply, used_model, usage = send_chat(retry_messages, model)
+        data = _parse_json_reply(reply)  # let this raise clearly if it's still broken
     if data.get("artifact"):
         data["artifact"] = strip_citations(data["artifact"])
     if data.get("answer"):

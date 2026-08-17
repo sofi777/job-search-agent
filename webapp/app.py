@@ -561,9 +561,15 @@ def _run_pane_turn(chat_session, job, display_message, preferences):
         # Preferences stay global/shared across every pane on purpose - feedback given to one
         # model should improve every model's output, not just that pane's.
         if check_preferences:
-            revision = agents.revise_preferences(tab, display_message, artifact_text, preferences, model)
-            if revision:
-                store.save_preference(revision["category"], revision["text"])
+            try:
+                revision = agents.revise_preferences(tab, display_message, artifact_text, preferences, model)
+                if revision:
+                    store.save_preference(revision["category"], revision["text"])
+            except RuntimeError:
+                # This is a secondary, best-effort step - the message/artifact above already
+                # generated and saved successfully, so a broken model reply here shouldn't
+                # discard that and report the whole turn as failed.
+                pass
         return None
     except RuntimeError as e:
         return str(e)

@@ -11,3 +11,6 @@ Reply with ONLY a JSON object, no markdown fences, no commentary outside the JSO
 "changed": true or false
 "category": "general" or "{artifact_type}" (which one to update; only meaningful if changed)
 "text": a single string, not a JSON array (only meaningful if changed) - the FULL revised text for that category, formatted as short bullet points separated by newlines within that one string, merging with what's already there rather than appending
+
+Respond with exactly this JSON shape, nothing before or after it (illustrative values only):
+{{"changed": true, "category": "cover_letter", "text": "- Keep tone conversational, not formal\n- Lead with impact, not responsibilities"}}

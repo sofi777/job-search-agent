@@ -9,4 +9,7 @@ Exact JSON keys:
 "reply": string, short conversational message - [Source N] citations go here
 "action": "new_question" or "update_answer"
 "question": string, the question text verbatim (required if action is new_question, else null)
-"answer": string, the full answer text - never [Source N] here
+"answer": string, the full answer text - never [Source N] here, and never left empty
+
+Respond with exactly this JSON shape, nothing before or after it (illustrative values only):
+{{"reply": "Here's a draft answer grounded in your product launch experience.", "action": "new_question", "question": "Why do you want to work here?", "answer": "..."}}

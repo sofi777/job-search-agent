@@ -7,4 +7,7 @@ The current draft and retrieved context for this turn follow after this. The use
 
 Exact JSON keys:
 "reply": string, short conversational message (not the letter itself) - [Source N] citations go here
-"artifact": string, FULL updated cover letter text, or null if this message didn't change the draft (e.g. just a question) - never [Source N] here
+"artifact": string, FULL updated cover letter text, or null if this message didn't change the draft (e.g. just a question) - never [Source N] here. If nothing has been written yet and the user is asking for a draft, this must contain the full letter - never leave it empty.
+
+Respond with exactly this JSON shape, nothing before or after it (illustrative values only):
+{{"reply": "I've drafted a cover letter emphasizing your product leadership experience.", "artifact": "Dear Hiring Manager,\n\n..."}}
