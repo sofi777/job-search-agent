@@ -470,17 +470,12 @@ def tailor(job_id):
         chat = store.get_chat_for_display(chat_session["id"])
         for m in chat:
             m["rendered"] = _render_chat_content(m["content"], m["citations"])
-        # The rate buttons for cover_letter/resume sit under the document, not under each
-        # bubble - they always rate whichever turn most recently produced it.
-        latest_assistant = next((m for m in reversed(chat) if m["role"] == "assistant"), None)
         panes.append({
             "id": chat_session["id"],
             "model": chat_session["model"],
             "chat": chat,
             "artifact_text": store.get_artifact_text(chat_session["id"]) if tab != "qa" else None,
             "qa_list": store.get_qa_list(chat_session["id"]) if tab == "qa" else None,
-            "latest_assistant_id": latest_assistant["id"] if latest_assistant else None,
-            "latest_assistant_rating": latest_assistant["rating"] if latest_assistant else None,
             "error": errors.get(str(chat_session["id"])),
         })
 

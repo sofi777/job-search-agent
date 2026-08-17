@@ -103,7 +103,15 @@
             <div class="pane-chat">
               {% for m in pane.chat %}
               <div class="msg-row {{ m.role }}">
-                <div class="msg-bubble">{{ m.rendered }}</div>
+                <div class="msg-bubble">
+                  {{ m.rendered }}
+                  {% if m.role == 'assistant' %}
+                  <div class="msg-rating" data-message-id="{{ m.id }}">
+                    <button type="button" class="rate-btn {{ 'selected' if m.rating == 'up' }}" data-rating="up" {{ 'disabled' if m.rating }}>&#128077;</button>
+                    <button type="button" class="rate-btn {{ 'selected' if m.rating == 'down' }}" data-rating="down" {{ 'disabled' if m.rating }}>&#128078;</button>
+                  </div>
+                  {% endif %}
+                </div>
               </div>
               {% else %}
               <div class="text-muted">{{ 'Type a message to draft the first version.' if pane.model else 'Pick a model above to start comparing.' }}</div>
@@ -117,10 +125,6 @@
             </div>
             {% if pane.artifact_text %}
             <div id="doc-{{ pane.id }}" class="pane-doc">{{ pane.artifact_text }}</div>
-            <div class="msg-rating" data-message-id="{{ pane.latest_assistant_id }}">
-              <button type="button" class="rate-btn {{ 'selected' if pane.latest_assistant_rating == 'up' }}" data-rating="up" {{ 'disabled' if pane.latest_assistant_rating }}>&#128077;</button>
-              <button type="button" class="rate-btn {{ 'selected' if pane.latest_assistant_rating == 'down' }}" data-rating="down" {{ 'disabled' if pane.latest_assistant_rating }}>&#128078;</button>
-            </div>
             {% else %}
             <div class="text-muted">Nothing generated yet.</div>
             {% endif %}
