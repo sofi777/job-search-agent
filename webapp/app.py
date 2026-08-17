@@ -424,12 +424,19 @@ def _render_chat_content(content, citations):
     model combining several into one marker ("[Source 1, 3]") - seen live even though the
     prompt asks for one number per marker - by rendering one button per number. Everything
     else is escaped normally. Returns a Markup-safe string.
+
+    Every retrieved chunk is appended as a "Retrieved for this turn" footer too, minus
+    whichever numbers were already cited inline - models reliably retrieve real context (see
+    _run_pane_turn's unconditional store.save_citations) but unreliably reference it inline
+    with [Source N] despite being asked to, which made real retrieval invisible in the UI.
     """
     by_number = {c["source_number"]: c for c in citations}
     pieces, last_end = [], 0
+    cited_numbers = set()
     for m in _CITATION_RE.finditer(content):
         pieces.append(escape(content[last_end:m.start()]))
         for n in (int(n) for n in re.findall(r"\d+", m.group(1))):
+            cited_numbers.add(n)
             citation = by_number.get(n)
             if citation:
                 pieces.append(Markup(
@@ -440,6 +447,16 @@ def _render_chat_content(content, citations):
                 pieces.append(escape(f"[Source {n}]"))
         last_end = m.end()
     pieces.append(escape(content[last_end:]))
+
+    uncited = [c for c in citations if c["source_number"] not in cited_numbers]
+    if uncited:
+        pieces.append(Markup('<div class="msg-sources"><span class="text-muted">Retrieved for this turn: </span>'))
+        for c in uncited:
+            pieces.append(Markup(
+                '<button type="button" class="citation" data-source="{}" data-filename="{}" '
+                'data-score="{}" data-text="{}">{}</button>'
+            ).format(c["source_number"], c["filename"], c["score"], c["text"], c["filename"]))
+        pieces.append(Markup("</div>"))
     return Markup("").join(pieces)
 
 

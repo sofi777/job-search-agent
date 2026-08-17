@@ -11,6 +11,8 @@ You'll be given retrieved context below (excerpts from the candidate's resume, w
 
 Cite used passages as [Source N] (matching the numbers in the retrieved context) in your reply only - never in the artifact/answer text (a real cover letter or answer must never contain a bracket citation).
 
+Keep the reply field brief - 1-2 sentences confirming what you did or asking a clarifying question, not a restatement of the job description or your reasoning. The artifact/answer field is where the real content goes.
+
 Reply with ONLY a JSON object, no markdown fences, no commentary outside the JSON.
 
 General style preferences (apply to all writing): {pref_general}
