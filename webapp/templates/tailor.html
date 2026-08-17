@@ -17,7 +17,6 @@
   .send-btn { background: var(--color-accent); color: #fff; border: none; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; font-size: 14px; }
   .send-btn:hover { background: var(--color-accent-600); }
   .send-btn:disabled { opacity: 0.5; cursor: not-allowed; background: var(--color-accent); }
-  .sending-note { font-size: 11px; margin-top: 6px; display: none; }
   .typing-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--color-neutral-600); margin-right: 4px; animation: typing-bounce 1.2s infinite ease-in-out; }
   .typing-dot:nth-child(2) { animation-delay: 0.2s; }
   .typing-dot:nth-child(3) { animation-delay: 0.4s; margin-right: 0; }
@@ -36,10 +35,14 @@
   #citation-dialog pre { white-space: pre-wrap; font: inherit; margin: 0; line-height: 1.5; }
 
   .panes-row { display: flex; gap: var(--space-4); flex-wrap: wrap; margin-top: var(--space-4); align-items: flex-start; }
-  .pane { flex: 1; min-width: 300px; border: 1px solid var(--color-divider); display: flex; flex-direction: column; }
+  .pane { flex: 1 1 300px; min-width: 300px; border: 1px solid var(--color-divider); display: flex; flex-direction: column; }
+  .pane.collapsed { flex: 0 0 44px; min-width: 44px; width: 44px; }
   .pane-header { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--color-divider); background: var(--color-surface); }
+  .pane.collapsed .pane-header { flex-direction: column; padding: 8px 4px; }
   .pane-model-select { flex: 1; min-height: 30px; font-size: 12px; }
-  .pane-toggle { all: unset; cursor: pointer; padding: 4px 8px; font-size: 11px; color: var(--color-neutral-700); }
+  .pane.collapsed .pane-model-select { display: none; }
+  .pane-header-actions { display: flex; flex-direction: column; align-items: center; gap: 2px; flex-shrink: 0; }
+  .pane-toggle { all: unset; cursor: pointer; padding: 4px 8px; font-size: 13px; line-height: 1; color: var(--color-neutral-700); }
   .pane-remove { all: unset; cursor: pointer; padding: 4px 8px; font-size: 16px; line-height: 1; color: var(--color-neutral-700); }
   .pane-remove:hover { color: var(--color-accent); }
   .pane-body { padding: var(--space-3); display: flex; flex-direction: column; }
@@ -72,14 +75,16 @@
     <div class="pane" data-session-id="{{ pane.id }}">
       <form method="post" action="{{ url_for('session_message', job_id=job.id, tab=tab, session_id=pane.id) }}" enctype="multipart/form-data" class="pane-form">
         <div class="pane-header">
-          <button type="button" class="pane-toggle" onclick="togglePane(this)">&#9660; Collapse</button>
           <select name="model" class="input pane-model-select">
             <option value="" {{ 'selected' if not pane.model }}>N/A</option>
             {% for m in models %}
             <option value="{{ m }}" {{ 'selected' if m == pane.model }}>{{ m }}</option>
             {% endfor %}
           </select>
-          <button type="submit" formaction="{{ url_for('remove_chat_session', job_id=job.id, tab=tab, session_id=pane.id) }}" formnovalidate class="pane-remove" title="Remove pane">&times;</button>
+          <div class="pane-header-actions">
+            <button type="submit" formaction="{{ url_for('remove_chat_session', job_id=job.id, tab=tab, session_id=pane.id) }}" formnovalidate class="pane-remove" title="Remove pane">&times;</button>
+            <button type="button" class="pane-toggle" onclick="togglePane(this)" title="Collapse">&#171;</button>
+          </div>
         </div>
         <div class="pane-body">
           {% if pane.error %}
@@ -152,10 +157,6 @@
               placeholder="{{ 'Paste an application question…' if tab == 'qa' else 'Message this pane…' }}"></textarea>
             <button type="submit" class="send-btn" title="Send to this pane only">&uarr;</button>
           </div>
-          <div class="sending-note text-muted">
-            <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
-            Generating - can take a while on free-tier models.
-          </div>
         </div>
       </form>
     </div>
@@ -184,7 +185,9 @@ function copyText(id) {
 function togglePane(btn) {
   const pane = btn.closest('.pane');
   pane.classList.toggle('collapsed');
-  btn.innerHTML = pane.classList.contains('collapsed') ? '&#9654; Expand' : '&#9660; Collapse';
+  const collapsed = pane.classList.contains('collapsed');
+  btn.innerHTML = collapsed ? '&#187;' : '&#171;';
+  btn.title = collapsed ? 'Expand' : 'Collapse';
 }
 
 function showAttachment(input) {
@@ -222,19 +225,55 @@ document.addEventListener('keydown', (e) => {
 });
 
 // Instant feedback + guard against an empty send: the whole flow is a full-page POST/redirect,
-// so there's a real gap before the new page arrives - show a "generating" note and disable just
-// this pane's send button (other panes stay fully usable while one is in flight).
+// so there's a real gap before the new page arrives. Show the user's message and a "thinking"
+// bubble right in that pane's chat immediately; the page reload that follows replaces this
+// with the real, persisted result. Also disables just this pane's send button (other panes
+// stay fully usable while one is in flight).
 document.addEventListener('submit', (e) => {
   const form = e.target.closest('.pane-form');
   if (!form) return;
+  // The remove (X) button submits this same form via formaction, with no message typed - it
+  // must bypass the empty-message guard below, which is only meant for the send button.
+  if (e.submitter && e.submitter.classList.contains('pane-remove')) return;
   const textarea = form.querySelector('.pane-input');
-  const hasAttachment = form.querySelector('input[type=file]').files.length > 0;
-  if (!textarea.value.trim() && !hasAttachment) {
+  const text = textarea.value.trim();
+  const fileInput = form.querySelector('input[type=file]');
+  const hasAttachment = fileInput.files.length > 0;
+  if (!text && !hasAttachment) {
     e.preventDefault();
     return;
   }
   form.querySelector('.send-btn').disabled = true;
-  form.querySelector('.sending-note').style.display = 'block';
+
+  const chat = form.querySelector('.pane-chat');
+  const emptyState = chat.querySelector('.text-muted');
+  if (emptyState) emptyState.remove();
+
+  const userRow = document.createElement('div');
+  userRow.className = 'msg-row user';
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-bubble';
+  bubble.textContent = hasAttachment
+    ? '\u{1F4CE} ' + fileInput.files[0].name + (text ? '\n' + text : '')
+    : text;
+  userRow.appendChild(bubble);
+  chat.appendChild(userRow);
+
+  const thinkingRow = document.createElement('div');
+  thinkingRow.className = 'msg-row assistant';
+  thinkingRow.innerHTML = '<div class="msg-bubble"><span class="typing-dot"></span>'
+    + '<span class="typing-dot"></span><span class="typing-dot"></span> Generating - can take a while on free-tier models.</div>';
+  chat.appendChild(thinkingRow);
+  chat.scrollTop = chat.scrollHeight;
+
+  // Deferred, not immediate: a real (non-AJAX) form submission reads each field's current
+  // value AFTER this event finishes dispatching, so clearing them synchronously here would
+  // submit the cleared values instead of what the user actually typed/attached.
+  setTimeout(() => {
+    textarea.value = '';
+    textarea.style.height = 'auto';
+    if (hasAttachment) clearAttachment(form.querySelector('.attach-chip button'));
+  }, 0);
 });
 
 // Citations: [Source N] renders server-side as a <button class="citation" data-*>; clicking

@@ -731,4 +731,10 @@ def usage():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=8014)
+    # threaded=True: without it, Werkzeug's dev server handles one request at a time, so a
+    # slow generation (an LLM call, sometimes tens of seconds with the retry in
+    # agents.run_tailor_turn) blocks every other request on the same process - including just
+    # switching tabs, which is why that could appear to hang or lose the reply. db.py opens a
+    # fresh connection per call (safe across threads) and rag.py's lazy singletons are already
+    # guarded by _init_lock, so this was always meant to run threaded.
+    app.run(debug=True, port=8014, threaded=True)
