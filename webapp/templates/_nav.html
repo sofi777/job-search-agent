@@ -5,9 +5,14 @@
   <a href="{{ url_for('profile_page') }}" class="btn btn-ghost btn-small">Profile</a>
   <a href="{{ url_for('priority') }}" class="btn btn-ghost btn-small">Edit ranking</a>
   <a href="{{ url_for('preferences') }}" class="btn btn-ghost btn-small">Preferences</a>
-  <a href="{{ url_for('chunks') }}" class="btn btn-ghost btn-small">Chunks</a>
-  <a href="{{ url_for('results') }}" class="btn btn-ghost btn-small">Results</a>
-  <a href="{{ url_for('usage') }}" class="btn btn-ghost btn-small">Usage</a>
+  <details class="admin-menu">
+    <summary class="btn btn-ghost btn-small">Admin</summary>
+    <div class="admin-panel">
+      <a href="{{ url_for('chunks') }}">Chunks</a>
+      <a href="{{ url_for('results') }}">Results</a>
+      <a href="{{ url_for('usage') }}">Usage</a>
+    </div>
+  </details>
   <form method="post" action="{{ url_for('onboarding_restart') }}" style="display:inline;">
     <button type="submit" class="btn btn-ghost btn-small">Restart onboarding</button>
   </form>
@@ -16,3 +21,11 @@
   </form>
   <div class="avatar">{{ user.initials }}</div>
 </div>
+
+<script>
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('.admin-menu[open]').forEach((menu) => {
+    if (!menu.contains(e.target)) menu.removeAttribute('open');
+  });
+});
+</script>
