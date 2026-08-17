@@ -25,8 +25,16 @@
     </div>
   </div>
 
+  <style>
+    .typing-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--color-neutral-600); margin-right: 4px; animation: typing-bounce 1.2s infinite ease-in-out; }
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; margin-right: 0; }
+    @keyframes typing-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
+    #add-job-note { display: none; font-size: 13px; margin-top: var(--space-3); }
+  </style>
+
   <dialog id="add-job-dialog">
-    <form method="post" action="{{ url_for('job_add') }}">
+    <form method="post" action="{{ url_for('job_add') }}" id="add-job-form">
       <h3 style="margin-top:0;">Add a job posting</h3>
       <p class="text-muted" style="font-size:13px;">Paste a link to a job posting. We'll fetch it and fill in the details. It won't have a match score until the next scan.</p>
       {% if add_job_error %}
@@ -36,15 +44,31 @@
         <label for="job_url">Job posting URL</label>
         <input class="input" id="job_url" name="url" type="url" placeholder="https://..." required autofocus>
       </div>
+      <p class="text-muted" id="add-job-note">
+        <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
+        Fetching the page and extracting details - this can take a while, especially on free-tier models.
+      </p>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:var(--space-3);">
-        <button type="button" class="btn btn-ghost" onclick="document.getElementById('add-job-dialog').close()">Cancel</button>
-        <button type="submit" class="btn btn-primary">Add job</button>
+        <button type="button" class="btn btn-ghost" id="add-job-cancel" onclick="document.getElementById('add-job-dialog').close()">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="add-job-submit">Add job</button>
       </div>
     </form>
   </dialog>
   {% if add_job_error %}
   <script>document.getElementById('add-job-dialog').showModal();</script>
   {% endif %}
+  <script>
+    // Fetching + LLM extraction takes a real amount of time (see src/ai.py extract_job_posting)
+    // and this is a plain full-page POST/redirect, so without this the dialog just sits there
+    // looking stuck between clicking "Add job" and the page reloading with the result.
+    document.getElementById('add-job-form').addEventListener('submit', () => {
+      document.getElementById('add-job-submit').disabled = true;
+      document.getElementById('add-job-submit').textContent = 'Adding...';
+      document.getElementById('add-job-cancel').disabled = true;
+      document.getElementById('job_url').readOnly = true;
+      document.getElementById('add-job-note').style.display = 'block';
+    });
+  </script>
 
   <form method="get" class="toolbar">
     <input type="hidden" name="sort" value="{{ sort_key }}">
