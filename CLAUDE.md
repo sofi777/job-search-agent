@@ -31,6 +31,8 @@
 ## before push to githib
 - Push via gh CLI 
 - always thin of security loopholes
+- see [`ISSUES.md`](ISSUES.md) for known gaps to fix before a public deploy - add to
+  it instead of silently accepting a new one
 
 ## Stack
 - Flask, SQLite (built-in `sqlite3`), Jinja2 templates
