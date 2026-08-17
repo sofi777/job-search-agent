@@ -34,11 +34,10 @@
   it instead of silently accepting a new one
 
 ## Stack
-- Flask, SQLite (built-in `sqlite3`), Jinja2 templates
+- Flask, sqlite3, Jinja2 templates
 
 ## Code Structure
 See [`structure.md`](structure.md) for the full breakdown - keep it up to date
-instead of duplicating it here.
 
 ## Final
 - end with the header Summary and a 1-3 concise bullet points of what has been done under it. Each bullet point needs a bold prefix with a colon
