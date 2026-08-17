@@ -44,9 +44,9 @@
   .pane-doc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   .pane-doc { border: 1px solid var(--color-divider); padding: var(--space-3); white-space: pre-line; line-height: 1.55; font-size: 13px; max-height: 280px; overflow-y: auto; margin-bottom: 6px; }
   .pane-error { display: block; margin-bottom: var(--space-3); font-size: 12px; }
-  .add-pane-tile { flex: 1; min-width: 300px; border: 1px dashed var(--color-divider); display: flex; align-items: center; justify-content: center; min-height: 160px; }
-  .add-pane-btn-inline { all: unset; cursor: pointer; color: var(--color-accent); font-weight: 600; font-size: 13px; padding: var(--space-3); }
-  .add-pane-btn-inline:hover { text-decoration: underline; }
+  .add-pane-tile { flex: 0 0 auto; }
+  .add-pane-btn-inline { all: unset; cursor: pointer; width: 30px; height: 30px; border: 1px dashed var(--color-divider); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--color-accent); font-weight: 600; font-size: 15px; }
+  .add-pane-btn-inline:hover { background: var(--color-accent-100); border-style: solid; }
 </style>
 
 <div class="container">
@@ -153,7 +153,7 @@
     {% endfor %}
 
     <form method="post" action="{{ url_for('add_chat_session', job_id=job.id, tab=tab) }}" class="add-pane-tile">
-      <button type="submit" class="add-pane-btn-inline">+ Add pane</button>
+      <button type="submit" class="add-pane-btn-inline" title="Add pane">+</button>
     </form>
   </div>
 
