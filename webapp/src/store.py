@@ -182,11 +182,8 @@ def _seed_sample_jobs_if_needed():
 
 
 # ---- tailoring chat sessions ("compare panes") -----------------------------
-# Each session is one independent thread + model + artifact/qa-list, up to
-# MAX_SESSIONS_PER_TAB per job+tab - see db.py's chat_sessions table docstring.
-
-MAX_SESSIONS_PER_TAB = 3
-
+# Each session is one independent thread + model + artifact/qa-list - no cap on how
+# many can exist per job+tab - see db.py's chat_sessions table docstring.
 
 def get_chat_sessions(job_id, chat_type):
     """This job+tab's panes, oldest/leftmost first. Does not auto-create one if none exist -
@@ -194,9 +191,11 @@ def get_chat_sessions(job_id, chat_type):
     return db.fetch_chat_sessions(job_id, chat_type)
 
 
+def get_chat_session(session_id):
+    return db.get_chat_session(session_id)
+
+
 def create_chat_session(job_id, chat_type, model=None):
-    if len(db.fetch_chat_sessions(job_id, chat_type)) >= MAX_SESSIONS_PER_TAB:
-        raise ValueError(f"Already at the {MAX_SESSIONS_PER_TAB}-pane limit for this tab.")
     return db.create_chat_session(job_id, chat_type, model, _now())
 
 

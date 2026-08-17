@@ -77,18 +77,18 @@ webapp/
   status dropdown on every dashboard row
 - **Comments**: free-text notes per job, saved inline
 - **Tailor my application** (`/jobs/<id>/tailor`): one page per job with three tabs -
-  Cover Letter, Resume, Q&A. Each tab holds up to 3 independent compare "panes" (a
-  `chat_sessions` row - see Persistence below), so you can generate the same message
-  from up to 3 models side by side and compare. Each pane has its own model dropdown
-  (or N/A - no call is made for that pane this turn), its own thread, and its own
-  generated document (cover letter/résumé) or, for Q&A, its answers shown inline in
-  that pane's own chat rather than a separate document box. "+ Add pane" adds one, up
-  to the 3-pane cap. One shared message box sends the same message to every pane that
-  has a model selected, concurrently (not one-by-one) - each pane's turn (retrieval,
-  generation, rate-limit fallback) runs independently, so one pane failing (e.g. a
-  JSON-parse hiccup) doesn't block the others. Writing-style preferences stay global
-  across every pane and model - feedback in one pane improves every future generation,
-  regardless of which model produced the feedback or which model generates next.
+  Cover Letter, Resume, Q&A. Each tab holds any number of independent compare "panes"
+  (a `chat_sessions` row - see Persistence below) so you can run different models side
+  by side - no cap on how many. Each pane is fully self-contained: its own model
+  dropdown (or N/A - no call is made for that pane until one is picked), its own
+  message box and send button, its own thread, and its own generated document (cover
+  letter/résumé) or, for Q&A, its answers shown inline in that pane's own chat rather
+  than a separate document box. Sending a message only affects that one pane - panes
+  don't share an input, so you can give each model different feedback rather than
+  always broadcasting the same message to all of them. "+ Add pane" sits inline at the
+  end of the row as its own tile. Writing-style preferences stay global across every
+  pane and model regardless - feedback in one pane improves every future generation,
+  no matter which model produced the feedback or which model generates next.
 - **Knowledge base chunks** (`/chunks`): every chunk the uploaded documents were split
   into, grouped by source file, with token counts. A chunk-size field + "Re-run
   chunking" button re-chunks and re-embeds the entire knowledge base at a new size.
@@ -178,23 +178,26 @@ aren't affected, since each pane's turn runs independently (see Compare panes
 below).
 
 **Compare panes**: `chat_sessions` (`src/db.py`) is one row per pane - job, tab,
-model, own thread, own artifact/Q&A list. `tailor_message()` reads every active
-pane's submitted model from the form (`model_<session_id>`, `""` meaning N/A - no
-call for that pane this turn), syncs `chat_sessions.model` if it changed, then runs
-`_run_pane_turn()` for each active one inside a `ThreadPoolExecutor` - concurrently,
-not one after another, since the panes don't depend on each other and a several-
-second-plus LLM call each would otherwise mean waiting up to 3x as long for no
-reason. A `RuntimeError` in one pane's turn is caught inside `_run_pane_turn()` and
-shown as that pane's own error (`session["tailor_errors"]`, keyed by session id) -
-it never aborts the others. `src/rag.py`'s lazily-initialized embedder/Chroma client
-are guarded by a lock (`_init_lock`) for this reason too: two panes both hitting a
-cold start at once previously crashed chromadb's client construction outright, not
-just raced it. Writing-style preferences (`revise_preferences`, below) are fetched
-once per turn and passed to every pane - deliberately not scoped per pane, so
-feedback in any one pane's chat improves every pane's future output. Existing job
-data from before this feature predates `chat_sessions`; `src/db.py`'s migration
-backfills one session per pre-existing (job, tab) thread, using whatever model that
-thread's last message actually used, so it picks up as that pane's Session 1.
+model, own thread, own artifact/Q&A list, no cap on how many can exist for one
+job+tab. Each pane is its own `<form>` posting to
+`/jobs/<id>/tailor/<tab>/session/<session_id>/message` - a message only ever affects
+the one pane it was sent from, on purpose: panes used to share one input that
+broadcast the same message to every active one, which meant you couldn't give
+different models different feedback. `session_message()` syncs `chat_sessions.model`
+if the pane's dropdown changed, then runs `_run_pane_turn()` for that pane alone. A
+`RuntimeError` from it (rate limit, JSON parse error) is caught and shown as that
+pane's own error (`session["tailor_errors"]`, keyed by session id), same as before.
+`src/rag.py`'s lazily-initialized embedder/Chroma client are still guarded by a lock
+(`_init_lock`) - Flask's dev server can still handle more than one request at a time
+(e.g. two pane sends fired close together in separate tabs), and two threads hitting
+a cold start at once previously crashed chromadb's client construction outright, not
+just raced it. Writing-style preferences (`revise_preferences`, below) are re-fetched
+fresh on every send and never scoped per pane, so feedback in any one pane's chat
+improves every pane's future output, regardless of which model produced the feedback
+or which model generates next. Existing job data from before this feature predates
+`chat_sessions`; `src/db.py`'s migration backfills one session per pre-existing (job,
+tab) thread, using whatever model that thread's last message actually used, so it
+picks up as that pane's Session 1.
 
 **Cross-job preference learning**: `revise_preferences()` makes a second, separate
 call asking whether a turn's feedback revealed a durable style preference (vs. being

@@ -54,7 +54,8 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
 ## Key routes (`app.py`)
 
 `/onboarding/<step>` (wizard) -> `/dashboard` -> `/jobs/<id>` -> `/jobs/<id>/tailor/<tab>`
-(up to 3 compare panes - chat + artifact per pane, run concurrently via
-`ThreadPoolExecutor` in `tailor_message()`; `/jobs/<id>/tailor/<tab>/sessions` adds a
-pane). Settings pages: `/profile`, `/preferences`, `/priority`, `/chunks`, `/results`,
+(any number of compare panes, each fully self-contained - own chat + artifact + send
+button; `POST /jobs/<id>/tailor/<tab>/session/<session_id>/message` sends to one
+pane only, `POST /jobs/<id>/tailor/<tab>/sessions` adds a pane). Settings pages:
+`/profile`, `/preferences`, `/priority`, `/chunks`, `/results`,
 `/usage`. Rating a response: `POST /messages/<id>/rate`.

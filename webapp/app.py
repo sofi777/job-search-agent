@@ -1,6 +1,5 @@
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import wraps
 
 from flask import Flask, redirect, render_template, request, session, url_for
@@ -488,7 +487,6 @@ def tailor(job_id):
         tab=tab,
         tab_labels=TAB_LABELS,
         panes=panes,
-        can_add_pane=len(panes) < store.MAX_SESSIONS_PER_TAB,
         models=agents.MODEL_OPTIONS,
     )
 
@@ -498,18 +496,14 @@ def tailor(job_id):
 def add_chat_session(job_id, tab):
     if tab not in store.TAILOR_TYPES:
         return redirect(url_for("tailor", job_id=job_id))
-    try:
-        store.create_chat_session(job_id, tab)
-    except ValueError:
-        pass  # already at the pane limit - the "+" button is hidden by then anyway
+    store.create_chat_session(job_id, tab)
     return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
 
 def _run_pane_turn(chat_session, job, display_message, preferences):
     """Run one full turn (classify -> retrieve -> generate -> persist) for one pane's own
-    thread. Returns None on success or an error message string on failure - a RuntimeError in
-    one pane (rate limit, JSON parse failure, ...) must not take down the others, since they
-    run concurrently and independently (see tailor_message).
+    thread. Returns None on success or an error message string on failure, for the caller to
+    show inline in that pane rather than crashing the whole request.
     """
     session_id, model, tab = chat_session["id"], chat_session["model"], chat_session["type"]
     try:
@@ -575,26 +569,39 @@ def _run_pane_turn(chat_session, job, display_message, preferences):
         return str(e)
 
 
-@app.route("/jobs/<int:job_id>/tailor/<tab>/message", methods=["POST"])
+@app.route("/jobs/<int:job_id>/tailor/<tab>/session/<int:session_id>/message", methods=["POST"])
 @login_required
-def tailor_message(job_id, tab):
+def session_message(job_id, tab, session_id):
+    """Send one message to one pane's own chat - independent of every other pane, so feedback
+    can be tailored per model instead of always broadcasting the same message to all of them.
+    """
     if tab not in store.TAILOR_TYPES:
         return redirect(url_for("tailor", job_id=job_id))
     job = store.get_job(job_id)
-    if job is None:
-        return redirect(url_for("dashboard"))
+    chat_session = store.get_chat_session(session_id)
+    if job is None or chat_session is None or chat_session["job_id"] != job_id or chat_session["type"] != tab:
+        return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
     message = request.form.get("message", "").strip()
     attachment = request.files.get("attachment")
     save_to_profile = bool(request.form.get("save_to_profile"))
 
+    # The dropdown may have changed since this pane was last rendered - sync it either way,
+    # even on an empty send (switching to/from N/A alone is a valid action).
+    submitted_model = request.form.get("model") or None
+    if submitted_model != chat_session["model"]:
+        store.set_session_model(session_id, submitted_model)
+        chat_session["model"] = submitted_model
+
     if not message and not (attachment and attachment.filename):
+        return redirect(url_for("tailor", job_id=job_id, tab=tab))
+    if not submitted_model:
         return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
     # display_message is what's shown in the chat and persisted to history: a short marker for
     # the attachment, not its full text. The full text is persisted+chunked+embedded separately
-    # (store.save_chat_attachment, shared across every pane) and reaches a model only via
-    # retrieval on whichever future turns actually match it.
+    # (store.save_chat_attachment, shared across every pane's knowledge base) and reaches a
+    # model only via retrieval on whichever future turns actually match it.
     display_message = message
     if attachment and attachment.filename:
         try:
@@ -602,40 +609,15 @@ def tailor_message(job_id, tab):
             store.save_chat_attachment(job_id, attachment.filename, attachment_text, save_to_profile)
             display_message = f"\U0001F4CE {attachment.filename}\n{message}".strip()
         except RuntimeError as e:
-            session["tailor_errors"] = {"_attachment": str(e)}
+            session["tailor_errors"] = {str(session_id): str(e)}
             return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
-    chat_sessions = store.get_chat_sessions(job_id, tab)
+    # Preferences stay global/shared across every pane on purpose (see _run_pane_turn) - read
+    # fresh here regardless, in case another pane's turn just updated them.
     preferences = store.get_preferences()
-
-    # Each pane's dropdown may have changed since it was last rendered - sync the stored
-    # selection to match, and collect the panes that aren't N/A into this turn's active set.
-    active_sessions = []
-    for chat_session in chat_sessions:
-        submitted_model = request.form.get(f"model_{chat_session['id']}") or None
-        if submitted_model != chat_session["model"]:
-            store.set_session_model(chat_session["id"], submitted_model)
-            chat_session["model"] = submitted_model
-        if submitted_model:
-            active_sessions.append(chat_session)
-
-    # Run every active pane's turn concurrently ("at the same time") rather than one after
-    # another - each is an independent, several-second-plus LLM call, so sequential would mean
-    # waiting up to 3x as long for no benefit (the panes don't depend on each other's output).
-    errors = {}
-    if active_sessions:
-        with ThreadPoolExecutor(max_workers=len(active_sessions)) as executor:
-            futures = {
-                executor.submit(_run_pane_turn, cs, job, display_message, preferences): cs["id"]
-                for cs in active_sessions
-            }
-            for future in as_completed(futures):
-                error = future.result()
-                if error:
-                    errors[str(futures[future])] = error
-
-    if errors:
-        session["tailor_errors"] = errors
+    error = _run_pane_turn(chat_session, job, display_message, preferences)
+    if error:
+        session["tailor_errors"] = {str(session_id): error}
 
     return redirect(url_for("tailor", job_id=job_id, tab=tab))
 

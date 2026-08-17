@@ -57,10 +57,11 @@ CANDIDATE_POOL = 20  # how many nearest neighbors to pull from Chroma before job
 
 _embedder = None
 _collection = None
-# Multi-model compare panes (see app.py's tailor_message) run their turns concurrently in
-# threads, and both sentence-transformers and chromadb's client construction have been seen to
-# crash (not just race) when two threads first initialize them at the same instant - lock
-# around the lazy-init, not every call, so steady-state reads stay uncontended.
+# Flask's dev server can handle more than one request at a time (e.g. two pane sends fired
+# close together in separate browser tabs), and both sentence-transformers and chromadb's
+# client construction have been seen to crash (not just race) when two threads first
+# initialize them at the same instant - lock around the lazy-init, not every call, so
+# steady-state reads stay uncontended.
 _init_lock = threading.Lock()
 
 

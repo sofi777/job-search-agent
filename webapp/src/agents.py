@@ -30,17 +30,24 @@ MAX_RATE_LIMIT_WAIT_SECONDS = 30
 # but incomplete JSON string that fails to parse (see send_chat's finish_reason check).
 MAX_TOKENS = 8000
 
-# Shown in the model dropdown. Free options first, then a couple of paid ones.
+# Shown in the model dropdown. Free options first, then paid ones cheapest to priciest.
 # Browse the full catalog at https://openrouter.ai/models.
 # deepseek/deepseek-r1:free was here until it was pulled from OpenRouter's catalog entirely
 # (calling it now 404s: "unavailable for free") - replaced with nvidia/nemotron-3-super-120b-a12b:free,
 # picked because it's large (120B), non-reasoning (no ":thinking" burn-the-budget risk, see
 # gpt-oss-20b below), and flags structured_outputs support in OpenRouter's own model metadata.
+# google/gemini-2.5-flash and qwen/qwen3.8-max were added after a real comparison against this
+# app's actual task (strict-JSON creative writing) measured on real production data: gemini-2.5-flash
+# had the best verified structured-output reliability of anything compared (99.8-99.9% schema-
+# enforced JSON success) at ~$0.002/cover-letter-generation; qwen3.8-max was the one model ranking
+# well on both instruction-following AND creative writing at once, priced close to Sonnet.
 MODEL_OPTIONS = [
     "google/gemma-4-26b-a4b-it:free",
     "openai/gpt-oss-20b:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
     "openai/gpt-4o-mini",
+    "google/gemini-2.5-flash",
+    "qwen/qwen3.8-max",
     "anthropic/claude-sonnet-5",
 ]
 
@@ -125,6 +132,8 @@ MODEL_PRICING = {
     "openai/gpt-oss-20b:free": (0, 0),
     "nvidia/nemotron-3-super-120b-a12b:free": (0, 0),
     "openai/gpt-4o-mini": (0.15, 0.60),
+    "google/gemini-2.5-flash": (0.30, 2.50),
+    "qwen/qwen3.8-max": (2.00, 6.00),
     "anthropic/claude-sonnet-5": (3.00, 15.00),
 }
 DEFAULT_PRICING = (0, 0)

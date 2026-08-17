@@ -2,9 +2,10 @@
 
 Tables: `users` (profile/onboarding answers + settings), `jobs` (every job
 posting, sample or user-added), `job_progress` (per-user, per-job
-status/comments), `chat_sessions` (one row per compare "pane" - up to 3 per
-job+tab, each with its own model and independent thread, see
-store.create_chat_session), `chat_messages` (belongs to one chat_session;
+status/comments), `chat_sessions` (one row per compare "pane" - no cap on how
+many per job+tab, each with its own model, independent thread, and own
+message box, see store.create_chat_session), `chat_messages` (belongs to one
+chat_session;
 assistant rows also carry response_time_seconds/input_tokens/output_tokens,
 the resulting artifact_text (the actual cover letter/résumé/Q&A answer as of
 that turn, not just the conversational reply), and an optional thumbs up/down
