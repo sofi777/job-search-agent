@@ -368,7 +368,18 @@ def classify_turn(artifact_type, message, has_existing_content):
     to True if the call fails or the reply is unparseable - the safe direction for
     both: doing the real thing when unsure never hurts correctness, it just costs
     a bit more.
+
+    Skips the call entirely when has_existing_content is False: a from-scratch generation
+    request always needs retrieval (there's nothing yet to treat as "just a stylistic edit"),
+    and reveals_preference is moot in that case anyway (app.py only checks it when there's
+    existing content to compare against). Not just an optimization - DEFAULT_MODEL was seen
+    answering needs_retrieval=False on this exact case (~1 in 4 tries live), which silently
+    skips retrieval on the highest-stakes turn to get it wrong on: the model then has no
+    facts to draw from or cite, and either fabricates or refuses.
     """
+    if not has_existing_content:
+        return {"needs_retrieval": True, "reveals_preference": False}
+
     existing_state = (
         "Some questions have already been answered for this job."
         if artifact_type == "qa"

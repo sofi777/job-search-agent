@@ -408,7 +408,7 @@ def job_status(job_id):
 
 
 TAB_LABELS = {"cover_letter": "Cover Letter", "resume": "Resume", "qa": "Q&A"}
-_CITATION_RE = re.compile(r"\[Source (\d+)\]")
+_CITATION_RE = re.compile(r"\[Source (\d+(?:\s*,\s*\d+)*)\]")
 
 
 def _qa_context_text(session_id):
@@ -420,21 +420,24 @@ def _qa_context_text(session_id):
 
 def _render_chat_content(content, citations):
     """Convert "[Source N]" markers into clickable buttons carrying that citation's chunk
-    text/score/filename as data attributes (see tailor.html showCitation()). Everything else
-    is escaped normally. Returns a Markup-safe string.
+    text/score/filename as data attributes (see tailor.html showCitation()). Also handles a
+    model combining several into one marker ("[Source 1, 3]") - seen live even though the
+    prompt asks for one number per marker - by rendering one button per number. Everything
+    else is escaped normally. Returns a Markup-safe string.
     """
     by_number = {c["source_number"]: c for c in citations}
     pieces, last_end = [], 0
     for m in _CITATION_RE.finditer(content):
         pieces.append(escape(content[last_end:m.start()]))
-        citation = by_number.get(int(m.group(1)))
-        if citation:
-            pieces.append(Markup(
-                '<button type="button" class="citation" data-source="{}" data-filename="{}" '
-                'data-score="{}" data-text="{}">{}</button>'
-            ).format(m.group(1), citation["filename"], citation["score"], citation["text"], m.group(0)))
-        else:
-            pieces.append(escape(m.group(0)))
+        for n in (int(n) for n in re.findall(r"\d+", m.group(1))):
+            citation = by_number.get(n)
+            if citation:
+                pieces.append(Markup(
+                    '<button type="button" class="citation" data-source="{}" data-filename="{}" '
+                    'data-score="{}" data-text="{}">[Source {}]</button>'
+                ).format(n, citation["filename"], citation["score"], citation["text"], n))
+            else:
+                pieces.append(escape(f"[Source {n}]"))
         last_end = m.end()
     pieces.append(escape(content[last_end:]))
     return Markup("").join(pieces)
