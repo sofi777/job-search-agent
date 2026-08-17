@@ -609,7 +609,10 @@ def session_message(job_id, tab, session_id):
             store.save_chat_attachment(job_id, attachment.filename, attachment_text, save_to_profile)
             display_message = f"\U0001F4CE {attachment.filename}\n{message}".strip()
         except RuntimeError as e:
-            session["tailor_errors"] = {str(session_id): str(e)}
+            # Merge rather than overwrite - two panes can send in close succession, each
+            # redirecting here before either's page reload has popped tailor_errors, and a
+            # plain assignment would silently drop whichever error lands first.
+            session["tailor_errors"] = {**session.get("tailor_errors", {}), str(session_id): str(e)}
             return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
     # Preferences stay global/shared across every pane on purpose (see _run_pane_turn) - read
@@ -617,7 +620,7 @@ def session_message(job_id, tab, session_id):
     preferences = store.get_preferences()
     error = _run_pane_turn(chat_session, job, display_message, preferences)
     if error:
-        session["tailor_errors"] = {str(session_id): error}
+        session["tailor_errors"] = {**session.get("tailor_errors", {}), str(session_id): error}
 
     return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
