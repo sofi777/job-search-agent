@@ -730,6 +730,14 @@ def usage():
     return render_template("usage.html", usage=rows, stats=store.usage_stats(rows))
 
 
+# ---- system components (architecture overview, UI only - see components.html) ---
+
+@app.route("/components")
+@login_required
+def system_components():
+    return render_template("components.html")
+
+
 if __name__ == "__main__":
     # threaded=True: without it, Werkzeug's dev server handles one request at a time, so a
     # slow generation (an LLM call, sometimes tens of seconds with the retry in

@@ -61,3 +61,9 @@ pane only, `POST /jobs/<id>/tailor/<tab>/sessions` adds a pane, `POST
 resurfaced by re-adding the same model). Settings pages:
 `/profile`, `/preferences`, `/priority`, `/chunks`, `/results`,
 `/usage`. Rating a response: `POST /messages/<id>/rate`.
+
+`/components` (`templates/components.html`, linked from the Admin menu as "System
+Components") is a UI-only architecture overview of the planned job-scan agent - Data
+Connectors, Agent, Tools, one card per component, all tagged "Not connected"/"Pending".
+No backend behind any card yet; see `~/.claude/plans/inherited-bubbling-honey.md` for
+the design this mirrors.

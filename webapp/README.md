@@ -131,6 +131,10 @@ webapp/
   function that talks to an LLM), so every caller (tailoring chat, classification,
   preference learning, job extraction) is covered automatically. Top of the page
   shows total and per-model cost/token/call counts.
+- **System Components** (`/components`): a UI-only architecture overview of the
+  planned job-scan agent (Gmail, SerpAPI, ATS boards, RemoteOK feeding a LangGraph
+  agent that filters, extracts, scores, saves, and updates applied status). Cards
+  only, nothing behind them yet - see "What's a placeholder" below.
 
 ## What's a placeholder (by design)
 

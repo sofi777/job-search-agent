@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}System Components - Dream Job Landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<style>
+  .component-section { margin-bottom: var(--space-8); }
+  .component-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: var(--space-3); }
+  .component-card { border: 1px solid var(--color-divider); background: var(--color-surface); padding: var(--space-4); display: flex; flex-direction: column; gap: 6px; }
+  .component-card h3 { font-size: 15px; margin: 0; }
+  .component-card p { font-size: 13px; margin: 0; }
+</style>
+
+<div class="container">
+  <h1>System Components</h1>
+  <p class="text-muted">Architecture overview for the job-scan agent - data connectors, the agent core, and the tools it drives. UI only for now; nothing here is wired up yet.</p>
+
+  <div class="hr"></div>
+
+  <section class="component-section">
+    <h2>Data Connectors</h2>
+    <p class="text-muted">Sources the agent pulls new listings and application signals from.</p>
+    <div class="component-grid">
+      <div class="component-card">
+        <div class="kicker">Source &middot; Email</div>
+        <h3>Gmail</h3>
+        <p class="text-muted">Job alerts (LinkedIn/Indeed/Wellfound) + applied confirmations</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+      <div class="component-card">
+        <div class="kicker">Source &middot; Search API</div>
+        <h3>SerpAPI</h3>
+        <p class="text-muted">Google Jobs - Indeed, LinkedIn, gov, websites of followed companies</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+      <div class="component-card">
+        <div class="kicker">Source &middot; Direct API</div>
+        <h3>ATS boards</h3>
+        <p class="text-muted">Lever, Greenhouse, Ashby, Workable</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+      <div class="component-card">
+        <div class="kicker">Source &middot; API</div>
+        <h3>RemoteOK</h3>
+        <p class="text-muted">Remote-tagged listings API</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="component-section">
+    <h2>Agent</h2>
+    <p class="text-muted">What drives a scan - what kicks it off, what it knows, and where the LLM calls go through.</p>
+    <div class="component-grid">
+      <div class="component-card">
+        <div class="kicker">Trigger</div>
+        <h3>Daily scheduler</h3>
+        <p class="text-muted">Kicks off a scan on a timer</p>
+        <span class="tag tag-outline">Pending</span>
+      </div>
+      <div class="component-card">
+        <div class="kicker">State &middot; DB</div>
+        <h3>Jobs table</h3>
+        <p class="text-muted">Dedup + last scan - the existing database, not agent memory</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+      <div class="component-card">
+        <div class="kicker">Soul</div>
+        <h3>Profile + scoring criteria</h3>
+        <p class="text-muted">Your onboarding profile and priority weights</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+      <div class="component-card">
+        <div class="kicker">Agent core</div>
+        <h3>AI Agent</h3>
+        <p class="text-muted">OpenRouter, one call function for every LLM call (chat or scheduled) + LangGraph orchestration</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="component-section">
+    <h2>Tools</h2>
+    <p class="text-muted">Actions the agent takes on each listing it finds.</p>
+    <div class="component-grid">
+      <div class="component-card">
+        <div class="kicker">Tool</div>
+        <h3>Filter &amp; dedupe</h3>
+        <p class="text-muted">Location/visa gate + cross-source dedup</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+      <div class="component-card">
+        <div class="kicker">Tool</div>
+        <h3>Extract &amp; structure</h3>
+        <p class="text-muted">Fetch listing, parse into job fields</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+      <div class="component-card">
+        <div class="kicker">Tool</div>
+        <h3>Score fit</h3>
+        <p class="text-muted">LLM scoring vs. profile</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+      <div class="component-card">
+        <div class="kicker">Tool</div>
+        <h3>Save to database</h3>
+        <p class="text-muted">Idempotent upsert &rarr; /dashboard</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+      <div class="component-card">
+        <div class="kicker">Tool</div>
+        <h3>Update applied status</h3>
+        <p class="text-muted">Match confirmation email &rarr; job, mark Applied or insert new row</p>
+        <span class="tag tag-neutral">Not connected</span>
+      </div>
+    </div>
+  </section>
+</div>
+{% endblock %}
