@@ -186,6 +186,58 @@ class SendChatTests(unittest.TestCase):
         self.assertNotEqual(used_model, first_model)
         self.assertIn(used_model, agents.FREE_MODEL_PRIORITY)
 
+    def test_free_model_falls_back_on_length_cutoff(self):
+        first_model = agents.FREE_MODEL_PRIORITY[0]
+
+        def fake_post(messages, model, api_key):
+            if model == first_model:
+                return {"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}], "usage": {}}
+            return {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        with mock.patch.object(agents, "_post", side_effect=fake_post), \
+             mock.patch.object(agents, "_log_last_call"), mock.patch.object(agents, "_log_usage"):
+            content, used_model, _usage = agents.send_message("hi", model=first_model)
+
+        self.assertEqual(content, "ok")
+        self.assertNotEqual(used_model, first_model)
+        self.assertIn(used_model, agents.FREE_MODEL_PRIORITY)
+
+    def test_free_model_falls_back_on_null_content(self):
+        first_model = agents.FREE_MODEL_PRIORITY[0]
+
+        def fake_post(messages, model, api_key):
+            if model == first_model:
+                return {"choices": [{"message": {"content": None}, "finish_reason": "stop"}], "usage": {}}
+            return {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        with mock.patch.object(agents, "_post", side_effect=fake_post), \
+             mock.patch.object(agents, "_log_last_call"), mock.patch.object(agents, "_log_usage"):
+            content, used_model, _usage = agents.send_message("hi", model=first_model)
+
+        self.assertEqual(content, "ok")
+        self.assertNotEqual(used_model, first_model)
+
+    def test_free_model_raises_last_error_when_every_fallback_unusable(self):
+        response = {"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}], "usage": {}}
+        with mock.patch.object(agents, "_post", return_value=response), \
+             mock.patch.object(agents, "_log_last_call"), mock.patch.object(agents, "_log_usage"):
+            with self.assertRaisesRegex(agents.UnusableReply, "cut off"):
+                agents.send_message("hi", model=agents.FREE_MODEL_PRIORITY[0])
+
+    def test_non_free_model_gets_no_fallback_on_length_cutoff(self):
+        response = {"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}], "usage": {}}
+        with mock.patch.object(agents, "_post", return_value=response) as mock_post, \
+             mock.patch.object(agents, "_log_last_call"), mock.patch.object(agents, "_log_usage"):
+            with self.assertRaises(agents.UnusableReply):
+                agents.send_message("hi", model="openai/gpt-4o-mini")
+        mock_post.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

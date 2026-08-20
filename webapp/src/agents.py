@@ -218,10 +218,13 @@ def send_chat(messages, model=DEFAULT_MODEL):
 
     Retries once on a 429 (rate limit) per model, waiting however long OpenRouter says to
     (see _post_with_backoff). If `model` is one of FREE_MODELS and still rate-limited after
-    that, falls back through FREE_MODEL_PRIORITY in order (skipping `model` itself) -
-    OpenRouter's free tier gets rate-limited per-model, not per-account, so a sibling free
-    model is often available even when the requested one isn't. Any other failure, or
-    exhausting every fallback, raises RuntimeError with a readable message.
+    that, or its reply is unusable (empty / cut off by the MAX_TOKENS cap - see UnusableReply
+    below), falls back through FREE_MODEL_PRIORITY in order (skipping `model` itself) -
+    OpenRouter's free tier gets rate-limited per-model, not per-account, and free models vary
+    in how often they blow the token budget on a given prompt, so a sibling free model is often
+    fine even when the requested one isn't. A non-free `model` gets no fallback: any failure
+    raises immediately. Exhausting every free fallback raises the last error seen (RuntimeError
+    for HTTP failures, UnusableReply for empty/cut-off replies).
     """
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
@@ -232,45 +235,47 @@ def send_chat(messages, model=DEFAULT_MODEL):
     else:
         candidates = [model]
 
-    data = used_model = last_error = None
+    last_error = None
     for candidate in candidates:
         try:
             data = _post_with_backoff(messages, candidate, api_key)
-            used_model = candidate
-            break
         except urllib.error.HTTPError as e:
             if e.code != 429:
                 raise RuntimeError(_format_error(e.code, e.read().decode())) from e
-            last_error = e
-    if data is None:
-        raise RuntimeError(_format_error(last_error.code, last_error.read().decode())) from last_error
+            last_error = RuntimeError(_format_error(e.code, e.read().decode()))
+            continue
 
-    _log_last_call(messages, used_model, data)
-    _log_usage(used_model, data.get("usage") or {})
+        _log_last_call(messages, candidate, data)
+        _log_usage(candidate, data.get("usage") or {})
 
-    choice = data["choices"][0]
-    content = choice["message"]["content"]
-    finish_reason = choice.get("finish_reason", "unknown")
-    if content is None:
-        # Seen with reasoning-heavy free models that exhaust their token budget
-        # "thinking" before emitting a reply. Fail clearly instead of crashing
-        # downstream on None; the caller can retry with a different model.
-        raise UnusableReply(
-            f"{used_model} returned no reply (finish_reason={finish_reason}). "
-            "This can happen with reasoning models running out of budget before answering - "
-            "try a different model from the dropdown."
-        )
-    if finish_reason == "length":
-        # content is non-None but was cut off mid-generation by the MAX_TOKENS cap - e.g. a
-        # reasoning model spent most of its budget "thinking" and ran out partway through the
-        # visible JSON reply. Downstream json.loads() would fail on this too, but with a
-        # confusing "malformed JSON" message that doesn't explain why; catching it here first
-        # gives a clear, specific error instead.
-        raise UnusableReply(
-            f"{used_model}'s reply was cut off before finishing (hit the {MAX_TOKENS}-token "
-            "limit). Try a shorter message, or a different model from the dropdown."
-        )
-    return content, used_model, data.get("usage") or {}
+        choice = data["choices"][0]
+        content = choice["message"]["content"]
+        finish_reason = choice.get("finish_reason", "unknown")
+        if content is None:
+            # Seen with reasoning-heavy free models that exhaust their token budget
+            # "thinking" before emitting a reply. Try the next free model rather than
+            # failing outright - see the fallback note above.
+            last_error = UnusableReply(
+                f"{candidate} returned no reply (finish_reason={finish_reason}). "
+                "This can happen with reasoning models running out of budget before answering - "
+                "try a different model from the dropdown."
+            )
+            continue
+        if finish_reason == "length":
+            # content is non-None but was cut off mid-generation by the MAX_TOKENS cap - e.g. a
+            # reasoning model spent most of its budget "thinking" and ran out partway through the
+            # visible JSON reply. Downstream json.loads() would fail on this too, but with a
+            # confusing "malformed JSON" message that doesn't explain why; catching it here first
+            # gives a clear, specific error and, for a free model, a shot at a sibling that
+            # doesn't burn its budget on this same prompt.
+            last_error = UnusableReply(
+                f"{candidate}'s reply was cut off before finishing (hit the {MAX_TOKENS}-token "
+                "limit). Try a shorter message, or a different model from the dropdown."
+            )
+            continue
+        return content, candidate, data.get("usage") or {}
+
+    raise last_error
 
 
 def send_message(message, model=DEFAULT_MODEL):
@@ -597,7 +602,7 @@ def route_assistant_turn(message, history, active_job, live_workflows):
     entries with status == "live" - the only workflow ids the model may return; wiring up a
     new workflow's runner later makes it routable automatically, no change needed here.
 
-    Returns {"action": one of live_workflows' ids, "chat", or "cover_letter",
+    Returns {"action": one of live_workflows' ids, "chat", "cover_letter", or "show_preferred",
              "job_query": short phrase naming the job this turn is about, or None}.
 
     Defaults to {"action": "chat", "job_query": None} on any failure (RuntimeError, an
@@ -606,7 +611,7 @@ def route_assistant_turn(message, history, active_job, live_workflows):
     unwanted document draft is the unsafe direction here, so the inert action is the only
     safe default.
     """
-    allowed_actions = {w["id"] for w in live_workflows} | {"chat", "cover_letter"}
+    allowed_actions = {w["id"] for w in live_workflows} | {"chat", "cover_letter", "show_preferred"}
     fallback = {"action": "chat", "job_query": None}
 
     action_list = "\n".join(f'- "{w["id"]}": {w["description"]}' for w in live_workflows)

@@ -258,6 +258,53 @@ class ArtifactAndQaTests(unittest.TestCase):
         self.assertEqual(store.get_qa_list(sid)[0]["content"], "Because reasons.")
 
 
+class PreferredCoverLetterTests(unittest.TestCase):
+    def tearDown(self):
+        # Cover_letter sessions are shared, unhidden state that other tests (e.g.
+        # test_assistant.HandleTurnCoverLetterTests) count on job 0/1 - hide what this class
+        # created so it doesn't leak into those counts depending on test run order.
+        for job in (store.jobs[0], store.jobs[1]):
+            for s in store.get_chat_sessions(job["id"], "cover_letter"):
+                store.remove_chat_session(s["id"])
+            store.unmark_preferred_cover_letter(job["id"])
+
+    def test_mark_get_and_content_reads_live(self):
+        job_id = store.jobs[0]["id"]
+        sid = store.create_chat_session(job_id, "cover_letter", "model-a")
+        store.save_artifact(sid, job_id, "cover_letter", "Dear hiring manager...")
+
+        self.assertIsNone(store.get_preferred_cover_letter(job_id))
+        store.mark_preferred_cover_letter(job_id, sid)
+
+        preferred = store.get_preferred_cover_letter(job_id)
+        self.assertEqual(preferred["session_id"], sid)
+        self.assertEqual(preferred["model"], "model-a")
+        self.assertEqual(preferred["content"], "Dear hiring manager...")
+
+        # A later revision to the same session is reflected with no separate "refresh" call.
+        store.save_artifact(sid, job_id, "cover_letter", "Dear hiring manager, revised...")
+        self.assertEqual(store.get_preferred_cover_letter(job_id)["content"], "Dear hiring manager, revised...")
+
+    def test_marking_a_different_session_replaces_the_previous_one(self):
+        job_id = store.jobs[0]["id"]
+        sid1 = store.create_chat_session(job_id, "cover_letter", "model-a")
+        sid2 = store.create_chat_session(job_id, "cover_letter", "model-b")
+        store.mark_preferred_cover_letter(job_id, sid1)
+        store.mark_preferred_cover_letter(job_id, sid2)
+        self.assertEqual(store.get_preferred_cover_letter(job_id)["session_id"], sid2)
+
+    def test_unmark_clears_it(self):
+        job_id = store.jobs[0]["id"]
+        sid = store.create_chat_session(job_id, "cover_letter", "m")
+        store.mark_preferred_cover_letter(job_id, sid)
+        store.unmark_preferred_cover_letter(job_id)
+        self.assertIsNone(store.get_preferred_cover_letter(job_id))
+
+    def test_unmarked_job_returns_none(self):
+        job_id = store.jobs[1]["id"]
+        self.assertIsNone(store.get_preferred_cover_letter(job_id))
+
+
 class PreferenceTests(unittest.TestCase):
     def test_round_trip(self):
         original = store.get_preferences()["general"]

@@ -33,5 +33,24 @@
       <button type="submit" class="btn btn-ghost">{{ 'Mark not applied' if job.status == 'applied' else 'Mark as applied' }}</button>
     </form>
   </div>
+
+  {% if preferred_cover_letter %}
+  <div class="hr"></div>
+  <div class="pane-doc-header">
+    <span class="text-muted" style="font-size:12px;">&#10003; Cover letter ready to send</span>
+    <div style="display:flex;gap:6px;">
+      <button type="button" class="btn btn-ghost btn-small" onclick="copyText('preferred-doc')">Copy</button>
+      <a href="{{ url_for('tailor', job_id=job.id, tab='cover_letter') }}" class="btn btn-ghost btn-small">Open</a>
+    </div>
+  </div>
+  <div id="preferred-doc" class="pane-doc">{{ preferred_cover_letter.content }}</div>
+  {% endif %}
 </div>
+{% block scripts %}
+<script>
+function copyText(id) {
+  navigator.clipboard.writeText(document.getElementById(id).innerText);
+}
+</script>
+{% endblock %}
 {% endblock %}

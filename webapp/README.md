@@ -112,6 +112,15 @@ webapp/
   end of the row as its own tile. Writing-style preferences stay global across every
   pane and model regardless - feedback in one pane improves every future generation,
   no matter which model produced the feedback or which model generates next.
+- **Preferred cover letter** ("ready to send"): on the Cover Letter tab, mark whichever
+  pane's draft you're happy with as the one preferred/final letter for that job - only
+  one at a time per job, marking a different pane replaces it. It's just a pointer to
+  that pane's own thread, not a copy, so any later revision to that same pane (from the
+  Tailor page or from chat, see below) stays the preferred version automatically. Shows
+  as a preview card on the job detail page, and is reachable from either chatbot: "show
+  me the preferred letter" pulls it up, and follow-up feedback ("make it more concise")
+  keeps revising that exact letter - the same turn logic, learned-preference loop, and
+  rating as everywhere else, not a separate copy.
 - **Knowledge base chunks** (`/chunks`): every chunk the uploaded documents were split
   into, grouped by source file, with token counts. A chunk-size field + "Re-run
   chunking" button re-chunks and re-embeds the entire knowledge base at a new size.
@@ -241,8 +250,12 @@ webapp/
     thumbs up/down rating are all the *same* record shown on that job's own `/jobs/<id>/
     tailor` page - the chat is just an additional front door onto it, not a separate
     copy. Preview and give feedback right in the chat; no need to navigate away.
+  - **Show the preferred cover letter** ("show me the preferred letter for the Notion
+    role") - a plain lookup of whatever's marked "ready to send" for that job (see
+    Preferred cover letter above), no generation call. Give feedback right after and it
+    keeps revising that exact letter, same as any other cover-letter turn.
   - **Answer questions or just talk** using your profile/preferences/dashboard as
-    context, when the message isn't asking for either of the above.
+    context, when the message isn't asking for any of the above.
 
   Tracks which job is under discussion across turns without you repeating it (falls
   back to whichever job the last relevant turn was about; asks for clarification rather

@@ -11,13 +11,16 @@ Latest message: "{message}"
 Available actions:
 {action_list}
 - "cover_letter": draft or revise a cover letter for a specific job.
+- "show_preferred": show the cover letter already marked "ready to send" for a specific
+  job - only when the user is asking to see/pull up/preview that saved/preferred/final
+  letter, not asking for a new draft.
 - "chat": anything else - a question, general conversation, or feedback on something already
   shown (feedback on a draft belongs to "cover_letter" only if it's asking for a new
   revision; otherwise treat it as "chat").
 
-If the action needs a job (cover_letter, or any workflow scoped to one job) and the message
-names one, put a short phrase identifying it (title/company/rank like "top job") in
-"job_query". Leave "job_query" null if no specific job is named or needed.
+If the action needs a job (cover_letter, show_preferred, or any workflow scoped to one job)
+and the message names one, put a short phrase identifying it (title/company/rank like "top
+job") in "job_query". Leave "job_query" null if no specific job is named or needed.
 
 Reply with ONLY a JSON object, no markdown fences, no commentary, with exactly these keys:
 "action": one of the action ids listed above, exactly as written

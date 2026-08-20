@@ -27,8 +27,6 @@
   .pane-body { padding: var(--space-3); display: flex; flex-direction: column; }
   .pane.collapsed .pane-body { display: none; }
   .pane-chat { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-3); }
-  .pane-doc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-  .pane-doc { border: 1px solid var(--color-divider); padding: var(--space-3); white-space: pre-line; line-height: 1.55; font-size: 13px; max-height: 280px; overflow-y: auto; margin-bottom: 6px; }
   .pane-error { display: block; margin-bottom: var(--space-3); font-size: 12px; }
   .add-pane-tile { flex: 0 0 auto; }
   .add-pane-btn-inline { all: unset; cursor: pointer; width: 30px; height: 30px; border: 1px dashed var(--color-divider); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--color-accent); font-weight: 600; font-size: 15px; }
@@ -107,9 +105,19 @@
               {% endfor %}
             </div>
             <div class="pane-doc-header">
-              <span class="text-muted" style="font-size:12px;">{{ tab_labels[tab] }}</span>
+              <span class="text-muted" style="font-size:12px;">
+                {{ tab_labels[tab] }}{% if pane.is_preferred %} &middot; <span style="color:var(--color-accent);">&#10003; Ready to send</span>{% endif %}
+              </span>
               {% if pane.artifact_text %}
-              <button type="button" class="btn btn-ghost btn-small" onclick="copyText('doc-{{ pane.id }}')">Copy</button>
+              <div style="display:flex;gap:6px;">
+                <button type="button" class="btn btn-ghost btn-small" onclick="copyText('doc-{{ pane.id }}')">Copy</button>
+                {% if tab == 'cover_letter' %}
+                <button type="submit" formaction="{{ url_for('toggle_preferred_cover_letter', job_id=job.id, session_id=pane.id) }}"
+                        formnovalidate class="btn btn-small pane-prefer-btn {{ 'btn-secondary' if pane.is_preferred }}">
+                  {{ 'Unmark ready to send' if pane.is_preferred else 'Mark ready to send' }}
+                </button>
+                {% endif %}
+              </div>
               {% endif %}
             </div>
             {% if pane.artifact_text %}
@@ -211,9 +219,10 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('submit', (e) => {
   const form = e.target.closest('.pane-form');
   if (!form) return;
-  // The remove (X) button submits this same form via formaction, with no message typed - it
-  // must bypass the empty-message guard below, which is only meant for the send button.
-  if (e.submitter && e.submitter.classList.contains('pane-remove')) return;
+  // The remove (X) button and the "mark ready to send" button both submit this same form
+  // via formaction, with no message typed - they must bypass the empty-message guard below,
+  // which is only meant for the send button.
+  if (e.submitter && (e.submitter.classList.contains('pane-remove') || e.submitter.classList.contains('pane-prefer-btn'))) return;
   const textarea = form.querySelector('.pane-input');
   const text = textarea.value.trim();
   const fileInput = form.querySelector('input[type=file]');

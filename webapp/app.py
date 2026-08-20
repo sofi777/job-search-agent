@@ -377,7 +377,8 @@ def job_detail(job_id):
         return redirect(url_for("dashboard"))
     if job["status"] == "new":
         store.update_job_progress(job_id, status="viewed")
-    return render_template("job_detail.html", job=job)
+    preferred_cover_letter = store.get_preferred_cover_letter(job_id)
+    return render_template("job_detail.html", job=job, preferred_cover_letter=preferred_cover_letter)
 
 
 @app.route("/jobs/<int:job_id>/comment", methods=["POST"])
@@ -473,6 +474,9 @@ def tailor(job_id):
         store.create_chat_session(job_id, tab, agents.DEFAULT_MODEL)
         chat_sessions = store.get_chat_sessions(job_id, tab)
 
+    preferred = store.get_preferred_cover_letter(job_id) if tab == "cover_letter" else None
+    preferred_session_id = preferred["session_id"] if preferred else None
+
     errors = session.pop("tailor_errors", {})
     panes = []
     for chat_session in chat_sessions:
@@ -486,6 +490,7 @@ def tailor(job_id):
             "artifact_text": store.get_artifact_text(chat_session["id"]) if tab != "qa" else None,
             "qa_list": store.get_qa_list(chat_session["id"]) if tab == "qa" else None,
             "error": errors.get(str(chat_session["id"])),
+            "is_preferred": chat_session["id"] == preferred_session_id,
         })
 
     return render_template(
@@ -574,6 +579,22 @@ def session_message(job_id, tab, session_id):
         session["tailor_errors"] = {**session.get("tailor_errors", {}), str(session_id): error}
 
     return redirect(url_for("tailor", job_id=job_id, tab=tab))
+
+
+@app.route("/jobs/<int:job_id>/tailor/cover_letter/session/<int:session_id>/prefer", methods=["POST"])
+@login_required
+def toggle_preferred_cover_letter(job_id, session_id):
+    """Mark this pane's cover letter as ready to send, or unmark it if it already is - see
+    store.mark_preferred_cover_letter. Only one session per job can be preferred at a time;
+    marking a different pane replaces it."""
+    chat_session = store.get_chat_session(session_id)
+    if chat_session and chat_session["job_id"] == job_id and chat_session["type"] == "cover_letter":
+        preferred = store.get_preferred_cover_letter(job_id)
+        if preferred and preferred["session_id"] == session_id:
+            store.unmark_preferred_cover_letter(job_id)
+        else:
+            store.mark_preferred_cover_letter(job_id, session_id)
+    return redirect(url_for("tailor", job_id=job_id, tab="cover_letter"))
 
 
 @app.route("/messages/<int:message_id>/rate", methods=["POST"])

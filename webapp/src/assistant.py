@@ -52,13 +52,22 @@ def get_or_create_cover_letter_session(job_id, model):
     would resurface/create a *different* session; here we want the same session, model
     swapped, so switching models in the widget never forks/resets the conversation). Creates
     a new session with that model if none exists yet.
+
+    If this job has a cover letter marked "ready to send" (see store.get_preferred_cover_letter),
+    that session always wins over the plain "first pane" default - so once a letter is marked
+    preferred, chat-driven feedback ("make it shorter") keeps revising that exact letter
+    instead of a different, unmarked pane.
     """
-    sessions = store.get_chat_sessions(job_id, "cover_letter")
-    if sessions:
+    preferred = store.get_preferred_cover_letter(job_id)
+    if preferred:
+        session_id = preferred["session_id"]
+    else:
+        sessions = store.get_chat_sessions(job_id, "cover_letter")
+        if not sessions:
+            return store.get_chat_session(store.create_chat_session(job_id, "cover_letter", model))
         session_id = sessions[0]["id"]
-        store.set_session_model(session_id, model)
-        return store.get_chat_session(session_id)
-    return store.get_chat_session(store.create_chat_session(job_id, "cover_letter", model))
+    store.set_session_model(session_id, model)
+    return store.get_chat_session(session_id)
 
 
 def _clarify_job_reply(candidates):
@@ -98,6 +107,33 @@ def _handle_cover_letter_turn(message, job_query, active_job_id, model):
         linked_chat_message_id=chat_message_id,
         response_time_seconds=chat_message["response_time_seconds"],
         input_tokens=chat_message["input_tokens"], output_tokens=chat_message["output_tokens"],
+    )
+
+
+def _handle_show_preferred_turn(job_query, active_job_id, model):
+    """"Show me the preferred letter" - a plain lookup, no LLM generation call. Mirrors the
+    marked letter into this thread as an artifact_text bubble (same rendering the widget
+    already does for a freshly drafted one), so the user can read it and then just keep
+    talking - a following revision request routes back through _handle_cover_letter_turn,
+    which now always continues this exact session once one is marked preferred (see
+    get_or_create_cover_letter_session), so that feedback runs the normal tailoring turn
+    (classify -> retrieve -> generate -> persist -> learn) against the real letter.
+    """
+    job, candidates = resolve_job(job_query, store.jobs) if job_query else (None, [])
+    if job is None and not job_query:
+        job = store.get_job(active_job_id) if active_job_id else None
+    if job is None:
+        return store.add_assistant_message("assistant", _clarify_job_reply(candidates), model=model)
+
+    preferred = store.get_preferred_cover_letter(job["id"])
+    if not preferred:
+        reply = f"No cover letter is marked ready to send yet for {job['title']} at {job['company']}."
+        return store.add_assistant_message("assistant", reply, job_id=job["id"], model=model)
+
+    reply = f"Here's the cover letter marked ready to send for {job['title']} at {job['company']}:"
+    return store.add_assistant_message(
+        "assistant", reply, job_id=job["id"], tool_name="show_preferred",
+        model=preferred["model"], artifact_text=preferred["content"],
     )
 
 
@@ -164,6 +200,8 @@ def handle_turn(message, model):
             assistant_message_id = store.add_assistant_message("assistant", reply, model=model)
         elif action == "cover_letter":
             assistant_message_id = _handle_cover_letter_turn(message, routing.get("job_query"), active_job_id, model)
+        elif action == "show_preferred":
+            assistant_message_id = _handle_show_preferred_turn(routing.get("job_query"), active_job_id, model)
         else:
             reply, used_model, usage = agents.answer_assistant_message(
                 message, history, store.profile, store.get_preferences(), store.jobs, model
