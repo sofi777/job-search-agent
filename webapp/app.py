@@ -6,7 +6,8 @@ from flask import Flask, redirect, render_template, request, session, url_for
 from markupsafe import Markup, escape
 from werkzeug.utils import secure_filename
 
-from src import agents, ai, files, scanner, store
+from src import agents, ai, files, filters, scanner, store, tools
+from src import components as comp
 
 app = Flask(__name__)
 app.secret_key = "dev-only-secret-key"  # POC only; use a real secret + env var before any real deploy
@@ -736,6 +737,222 @@ def usage():
 @login_required
 def system_components():
     return render_template("components.html")
+
+
+# ---- sourcing components (SerpAPI, RemoteOK, ATS boards - see src/components/) --------
+
+COMPONENT_IDS = tuple(comp.COMPONENTS.keys())
+
+
+def _parse_csv(value):
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
+def _parse_serpapi_settings(form):
+    queries = []
+    for label, terms, match, location, date_posted, employment_types, remote_only in zip(
+        form.getlist("query_label"), form.getlist("query_terms"), form.getlist("query_match"),
+        form.getlist("query_location"), form.getlist("query_date_posted"),
+        form.getlist("query_employment_types"), form.getlist("query_remote_only"),
+    ):
+        terms = _parse_csv(terms)
+        if terms:
+            queries.append({
+                "label": label.strip() or "Search", "terms": terms, "match": match,
+                "location": location.strip(), "date_posted": date_posted,
+                "employment_types": _parse_csv(employment_types), "remote_only": bool(remote_only),
+            })
+    followed_filters = {
+        "location": form.get("followed_location", "").strip(),
+        "date_posted": form.get("followed_date_posted", "month"),
+        "employment_types": _parse_csv(form.get("followed_employment_types", "")),
+        "remote_only": bool(form.get("followed_remote_only")),
+    }
+    return {
+        "queries": queries, "use_followed_companies": bool(form.get("use_followed_companies")),
+        "followed_companies_filters": followed_filters,
+    }
+
+
+def _parse_remoteok_settings(form):
+    days = form.get("posted_within_days", "").strip()
+    return {
+        "keywords": _parse_csv(form.get("keywords", "")),
+        "seniority_keywords": _parse_csv(form.get("seniority_keywords", "")),
+        "posted_within_days": int(days) if days.isdigit() else None,
+    }
+
+
+def _parse_ats_settings(form):
+    companies = []
+    for name, platform, slug in zip(
+        form.getlist("company_name"), form.getlist("company_platform"), form.getlist("company_slug"),
+    ):
+        if name.strip():
+            companies.append({"name": name.strip(), "platform": platform.strip(), "slug": slug.strip()})
+    return {
+        "companies": companies,
+        "keywords": _parse_csv(form.get("keywords", "")),
+        "seniority_keywords": _parse_csv(form.get("seniority_keywords", "")),
+        "location_filter": _parse_csv(form.get("location_filter", "")),
+    }
+
+
+SETTINGS_PARSERS = {"serpapi": _parse_serpapi_settings, "remoteok": _parse_remoteok_settings, "ats": _parse_ats_settings}
+
+
+def _component_config(component_id):
+    default_config = comp.COMPONENTS[component_id]["default_config"](store.profile)
+    return store.get_component_config(component_id, default_config)
+
+
+def _ats_config_with_followed_companies(config):
+    """Merge any profile.followed_companies not already listed into config["companies"] for
+    display - platform/slug blank until the user fills them in. Not persisted until Save."""
+    existing = {c["name"] for c in config["companies"]}
+    extra = [{"name": n, "platform": "", "slug": ""} for n in store.get_followed_companies() if n not in existing]
+    return {**config, "companies": config["companies"] + extra}
+
+
+@app.route("/components/<component_id>")
+@login_required
+def component_detail(component_id):
+    if component_id not in COMPONENT_IDS:
+        return redirect(url_for("system_components"))
+
+    config = _component_config(component_id)
+    if component_id == "ats":
+        config = _ats_config_with_followed_companies(config)
+
+    run_id = request.args.get("run", type=int)
+    run = store.get_run(run_id) if run_id else store.get_latest_run(component_id)
+    results = store.get_run_results(run["id"]) if run else []
+
+    return render_template(
+        "component_detail.html",
+        component_id=component_id,
+        meta=comp.COMPONENTS[component_id],
+        config=config,
+        runs=store.get_component_runs(component_id),
+        run=run,
+        results=results,
+        followed_companies=store.get_followed_companies(),
+        serpapi_options={
+            "date_posted": comp.serpapi.DATE_POSTED_OPTIONS, "match": comp.serpapi.MATCH_OPTIONS,
+            "employment_type": comp.serpapi.EMPLOYMENT_TYPE_OPTIONS, "remote_only": comp.serpapi.REMOTE_ONLY_OPTIONS,
+        } if component_id == "serpapi" else None,
+        location_suggestions=store.profile.get("eligible_countries", []) + store.profile.get("remote_countries", []),
+        settings_saved=request.args.get("saved"),
+        add_job_error=session.pop("add_job_error", None),
+        add_job_success=session.pop("add_job_success", None),
+    )
+
+
+@app.route("/components/<component_id>/settings", methods=["POST"])
+@login_required
+def component_settings(component_id):
+    if component_id not in COMPONENT_IDS:
+        return redirect(url_for("system_components"))
+
+    config = SETTINGS_PARSERS[component_id](request.form)
+    store.save_component_config(component_id, config)
+
+    if component_id in ("serpapi", "ats"):
+        new_companies = _parse_csv(request.form.get("new_followed_companies", ""))
+        if new_companies:
+            store.add_followed_companies(new_companies)
+
+    return redirect(url_for("component_detail", component_id=component_id, saved=1))
+
+
+@app.route("/components/<component_id>/run", methods=["POST"])
+@login_required
+def component_run(component_id):
+    if component_id not in COMPONENT_IDS:
+        return redirect(url_for("system_components"))
+
+    # Defaults to test mode unless "live" is explicitly submitted - a missing/malformed
+    # field should never accidentally trigger a real, credit-spending run.
+    test_mode = request.form.get("mode") != "live"
+
+    # Parsed straight from the submitted settings form, not the saved config - Run shares that
+    # form (see component_detail.html) but never writes anything, so trying out different
+    # values doesn't require Save settings first, and running never silently discards edits.
+    config = SETTINGS_PARSERS[component_id](request.form)
+    if component_id == "serpapi":
+        config = {**config, "followed_companies": store.get_followed_companies()}
+
+    # Fetch is this component's whole job - it only knows the query filters it was given
+    # (role terms, location, date posted, ...), not the profile's hard-preference gate or
+    # cross-source dedup, and it never touches the jobs table. Filtering/staging is a
+    # separate stage (src/store.py's apply_run_filters, src/filters.py) run explicitly from
+    # the run summary below, or from the Filter & dedupe tool - not chained here.
+    run_id = store.start_run(component_id, "test" if test_mode else "live")
+    try:
+        listings, error = comp.COMPONENTS[component_id]["run"](config, test_mode)
+    except Exception as e:
+        store.save_fetch_results(run_id, [], str(e))
+        return redirect(url_for("component_detail", component_id=component_id, run=run_id))
+
+    store.save_fetch_results(run_id, listings, error)
+    return redirect(url_for("component_detail", component_id=component_id, run=run_id))
+
+
+@app.route("/components/<component_id>/runs/<int:run_id>/filter", methods=["POST"])
+@login_required
+def component_run_filter(component_id, run_id):
+    """Run the filter/dedup stage (src/filters.py, via store.apply_run_filters) against a
+    run that was already fetched - decoupled from component_run() above so a run fetched
+    earlier (or by something other than this route) can be filtered separately. No-op if
+    this run isn't in "fetched" (pending) state."""
+    run = store.get_run(run_id)
+    if run is None or run["component_id"] != component_id:
+        return redirect(url_for("component_detail", component_id=component_id))
+    store.apply_run_filters(run_id)
+    return redirect(url_for("component_detail", component_id=component_id, run=run_id))
+
+
+@app.route("/components/<component_id>/results/<int:result_id>/add", methods=["POST"])
+@login_required
+def component_result_add(component_id, result_id):
+    if component_id not in COMPONENT_IDS:
+        return redirect(url_for("system_components"))
+    try:
+        store.add_run_result_to_dashboard(result_id, component_id)
+        session["add_job_success"] = "Added to your dashboard."
+    except RuntimeError as e:
+        session["add_job_error"] = str(e)
+    return redirect(request.referrer or url_for("component_detail", component_id=component_id))
+
+
+@app.route("/tools/<tool_id>")
+@login_required
+def tool_detail(tool_id):
+    if tool_id not in tools.TOOLS:
+        return redirect(url_for("system_components"))
+    meta = tools.TOOLS[tool_id]
+    component_names = {cid: comp.COMPONENTS[cid]["name"] for cid in COMPONENT_IDS}
+
+    active_filters, runs_by_mode, staged_results, jobs_by_mode = None, None, None, None
+    if tool_id == "filter_dedupe":
+        # Filtering a run and saving what survives are two steps of one review flow, shown
+        # together: active filters -> run log (with a Run button on anything still
+        # "fetched") -> staged results awaiting "Add to dashboard" -> the saved-jobs log.
+        active_filters = filters.describe_active_filters(store.profile)
+        all_runs = store.get_all_component_runs()
+        runs_by_mode = {mode: [r for r in all_runs if r["mode"] == mode] for mode in ("test", "live")}
+        staged_results = store.get_staged_results_for_review()
+
+        sourced = [j for j in store.jobs if j.get("origin") in COMPONENT_IDS]
+        modes = store.get_run_modes_for_urls([j["url"] for j in sourced])
+        tagged = [{**j, "run_mode": modes.get(j["url"], "unknown")} for j in sourced]
+        jobs_by_mode = {mode: [j for j in tagged if j["run_mode"] == mode] for mode in ("test", "live", "unknown")}
+
+    return render_template(
+        "tool_detail.html", tool_id=tool_id, meta=meta, component_names=component_names,
+        active_filters=active_filters, runs_by_mode=runs_by_mode,
+        staged_results=staged_results, jobs_by_mode=jobs_by_mode,
+    )
 
 
 if __name__ == "__main__":

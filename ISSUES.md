@@ -14,3 +14,18 @@ Tracked here so they don't get lost. Check off and remove once fixed.
   cookies, so anyone who reads the source can forge a valid "logged in" cookie
   without even hitting `/login`. Needs to move to an env var (`SECRET_KEY` in `.env`,
   random value, never committed).
+
+## Known gaps
+
+- [ ] **Location matching is exact-substring only.** `src/components/base.py`'s
+  `location_match()` (used by `src/filters.py`'s hard eligibility/remote-country gate and
+  by the ATS component) checks whether an allowed country name is a literal substring of
+  the listing's location text - "US" or "USA" won't match an allowed "United States", and
+  vice versa. A real listing could get wrongly filtered out (or through) on an
+  abbreviation/alias mismatch. Fine for now (most sources return full country/city names);
+  would need real geocoding or an alias table to be reliable.
+- [ ] **Commute radius is a city-text match, not a real distance.** `src/filters.py`'s hard
+  gate now drops onsite listings whose location text doesn't contain the user's home city
+  (from `profile.home_address`), but `commute_miles` itself is still never read anywhere -
+  it's "same city or not", not "within N miles". Needs real geocoding (address -> lat/lng
+  + distance) to honor the actual radius the user set.

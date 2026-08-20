@@ -265,5 +265,63 @@ class SettingsTests(DbTestCase):
         self.assertEqual(db.get_setting("chunk_size_tokens"), "256")
 
 
+class ComponentRunTests(DbTestCase):
+    """fetch_all_runs / fetch_run_modes_for_urls - used by the tool admin pages
+    (app.py's tool_detail(), src/tools.py)."""
+
+    def test_fetch_all_runs_spans_every_component_newest_first(self):
+        r1 = db.insert_run("serpapi", "t1", "test")
+        r2 = db.insert_run("remoteok", "t2", "live")
+        db.finish_run(r1, "t1b", "ok", 3)
+        db.finish_run(r2, "t2b", "ok", 1)
+        runs = db.fetch_all_runs()
+        self.assertEqual([r["id"] for r in runs], [r2, r1])
+        self.assertEqual({r["component_id"] for r in runs}, {"serpapi", "remoteok"})
+
+    def test_fetch_run_modes_for_urls_picks_most_recent_run(self):
+        r1 = db.insert_run("serpapi", "t1", "test")
+        db.insert_run_result(r1, {"title": "T", "company": "C", "source": "S",
+                                   "location": "L", "url": "https://x.com/1"})
+        r2 = db.insert_run("serpapi", "t2", "live")
+        db.insert_run_result(r2, {"title": "T", "company": "C", "source": "S",
+                                   "location": "L", "url": "https://x.com/1"})
+        self.assertEqual(db.fetch_run_modes_for_urls(["https://x.com/1"]), {"https://x.com/1": "live"})
+
+    def test_fetch_run_modes_for_urls_empty_input(self):
+        self.assertEqual(db.fetch_run_modes_for_urls([]), {})
+
+    def test_fetch_run_modes_for_urls_unknown_url_omitted(self):
+        self.assertEqual(db.fetch_run_modes_for_urls(["https://nope.com"]), {})
+
+    def test_save_and_fetch_raw_results_round_trip(self):
+        run_id = db.insert_run("serpapi", "t1", "test")
+        self.assertEqual(db.fetch_raw_results(run_id), [])  # nothing fetched yet
+
+        listings = [{"title": "A", "url": "https://x.com/1"}, {"title": "B", "url": "https://x.com/2"}]
+        db.save_raw_results(run_id, listings, "fetched")
+        self.assertEqual(db.fetch_raw_results(run_id), listings)
+
+        run = db.fetch_run(run_id)
+        self.assertEqual(run["status"], "fetched")
+        self.assertEqual(run["fetched_count"], 2)
+        self.assertNotIn("raw_results_json", run)  # heavy blob excluded from the run row itself
+
+    def test_save_raw_results_error_status_and_message(self):
+        run_id = db.insert_run("serpapi", "t1", "test")
+        db.save_raw_results(run_id, [], "error", "boom")
+        run = db.fetch_run(run_id)
+        self.assertEqual(run["status"], "error")
+        self.assertEqual(run["error_message"], "boom")
+
+    def test_clear_raw_results(self):
+        run_id = db.insert_run("serpapi", "t1", "test")
+        db.save_raw_results(run_id, [{"title": "A", "url": "https://x.com/1"}], "fetched")
+        db.clear_raw_results(run_id)
+        self.assertEqual(db.fetch_raw_results(run_id), [])
+
+    def test_fetch_raw_results_unknown_run(self):
+        self.assertEqual(db.fetch_raw_results(-1), [])
+
+
 if __name__ == "__main__":
     unittest.main()

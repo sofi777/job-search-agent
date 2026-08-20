@@ -12,11 +12,13 @@
 - use HTML templates with base
 - no fallback errors, fail clearly
 - no em-dashes at all costs
+- whenever you add a feature, create a concise, fast unit-test that verifies that the feature is working correctly including corner cases (and run it)
 - update `requirements.txt` if needed
 - update `CLAUDE.md` when a rule/convention changes; update `structure.md` when the
   code structure changes or you learn something about it worth recording (keep it
   concise) - they cover different things, check both
 - update the `README.md` whenever a new feature is added
+- always load API keys from .env and never hardcode or print them
 - Do not do browser testing (like playwright) unless i explicitly tell you to
 - Ask me questions before implementing if you are not sure, have missing information
 - if you see repeated code, consolidate
@@ -28,6 +30,7 @@
   prompt/completion/total tokens, estimated cost. Visible in-app at `/usage`.
   Don't log usage anywhere else - `send_chat` is the single choke point.
 ## before push to githib
+- run all unit test, fix any issues found. dont until all tests passed
 - Push via gh CLI 
 - always thin of security loopholes
 - see [`ISSUES.md`](ISSUES.md) for known gaps to fix before a public deploy - add to

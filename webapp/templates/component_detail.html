@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+{% block title %}{{ meta.name }} - Dream Job Landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<style>
+  .run-actions { display: flex; gap: 8px; margin: var(--space-4) 0; flex-wrap: wrap; }
+  .run-summary { font-size: 13px; margin-bottom: var(--space-3); }
+  .run-summary .error { color: var(--color-accent); }
+  #company-row-template { display: none; }
+  .settings-section { margin-bottom: var(--space-6); }
+</style>
+
+<div class="container">
+  <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:var(--space-3);margin-bottom:var(--space-4);">
+    <div>
+      <a href="{{ url_for('system_components') }}" class="text-muted" style="font-size:12px;text-decoration:none;">&larr; System Components</a>
+      <h1>{{ meta.name }}</h1>
+      <div class="text-muted">{{ meta.description }}</div>
+    </div>
+  </div>
+
+  {% if settings_saved %}
+  <div style="margin-bottom:var(--space-3);font-size:13px;padding:6px 10px;border:1px solid var(--color-divider);background:var(--color-surface);display:inline-block;">Settings saved.</div>
+  {% endif %}
+  {% if add_job_success %}
+  <div style="margin-bottom:var(--space-3);font-size:13px;padding:6px 10px;border:1px solid var(--color-divider);background:var(--color-surface);display:inline-block;">{{ add_job_success }}</div>
+  {% endif %}
+  {% if add_job_error %}
+  <div style="margin-bottom:var(--space-3);font-size:13px;padding:6px 10px;border:1px solid var(--color-accent);background:var(--color-accent-100);color:var(--color-accent-800);display:inline-block;">{{ add_job_error }}</div>
+  {% endif %}
+
+  <div class="hr"></div>
+
+  <h2>Settings</h2>
+  <form method="post" action="{{ url_for('component_settings', component_id=component_id) }}">
+    <!-- One form for both Save settings and Run (see the run-actions bar at the bottom) - Run
+         posts here too (via formaction) so it always uses whatever's currently in these fields,
+         not the last-saved config, and never writes anything unless Save settings is clicked. -->
+
+    {% if component_id == 'serpapi' %}
+    <datalist id="location-suggestions">
+      {% for loc in location_suggestions %}<option value="{{ loc }}">{% endfor %}
+    </datalist>
+
+    <div class="settings-section">
+      <div id="queries-list">
+        {% for q in config.queries %}
+        {% include "_serpapi_query_row.html" %}
+        {% endfor %}
+      </div>
+      <template id="query-row-template">
+        {% set q = {"label": "", "terms": [], "match": "OR", "location": "", "date_posted": "week", "employment_types": [], "remote_only": False} %}
+        {% include "_serpapi_query_row.html" %}
+      </template>
+      <button type="button" class="btn btn-secondary btn-small" style="margin-top:8px;" onclick="addQueryRow()">+ Add query</button>
+    </div>
+
+    <div class="settings-section">
+      <label style="display:flex;align-items:center;gap:8px;">
+        <input type="checkbox" name="use_followed_companies" {{ 'checked' if config.use_followed_companies else '' }}
+               onchange="document.getElementById('followed-companies-section').style.display = this.checked ? 'block' : 'none';">
+        Also search your followed companies by name (one extra query)
+      </label>
+      <div id="followed-companies-section" style="display:{{ 'block' if config.use_followed_companies else 'none' }};margin-top:8px;">
+        {% set name_prefix = "followed" %}
+        {% set q = config.followed_companies_filters %}
+        {% include "_serpapi_filters.html" %}
+        {% include "_followed_companies.html" %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if component_id == 'remoteok' %}
+    <div class="settings-section">
+      <div class="field">
+        <label>Keywords (comma-separated)</label>
+        <input class="input" name="keywords" value="{{ config.keywords|join(', ') }}">
+      </div>
+      <div class="field">
+        <label>Seniority keywords (comma-separated - title must contain at least one)</label>
+        <input class="input" name="seniority_keywords" value="{{ config.seniority_keywords|join(', ') }}">
+      </div>
+      <div class="field" style="max-width:260px;">
+        <label>Posted within (days, blank = no filter)</label>
+        <input class="input" type="number" min="1" name="posted_within_days" value="{{ config.posted_within_days or '' }}">
+      </div>
+    </div>
+    {% endif %}
+
+    {% if component_id == 'ats' %}
+    <div class="settings-section">
+      <label>Companies to scan</label>
+      <p class="text-muted" style="font-size:12px;">Platform + slug come from that company's careers URL (e.g. jobs.lever.co/&lt;slug&gt;, boards.greenhouse.io/&lt;slug&gt;, jobs.ashbyhq.com/&lt;slug&gt;, apply.workable.com/&lt;slug&gt;). Rows missing either are skipped when you run.</p>
+      <div class="table-wrap">
+        <table class="table" id="companies-table">
+          <thead><tr><th>Company</th><th>Platform</th><th>Slug</th></tr></thead>
+          <tbody>
+            {% for c in config.companies %}
+            <tr>
+              <td><input class="input" name="company_name" value="{{ c.name }}"></td>
+              <td>
+                <select class="input" name="company_platform">
+                  <option value="" {{ 'selected' if not c.platform else '' }}>Not set</option>
+                  {% for p in ['lever', 'greenhouse', 'ashby', 'workable'] %}
+                  <option value="{{ p }}" {{ 'selected' if c.platform == p else '' }}>{{ p|capitalize }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td><input class="input" name="company_slug" value="{{ c.slug }}"></td>
+            </tr>
+            {% endfor %}
+            <tr id="company-row-template">
+              <td><input class="input" name="company_name" value=""></td>
+              <td>
+                <select class="input" name="company_platform">
+                  <option value="" selected>Not set</option>
+                  {% for p in ['lever', 'greenhouse', 'ashby', 'workable'] %}
+                  <option value="{{ p }}">{{ p|capitalize }}</option>
+                  {% endfor %}
+                </select>
+              </td>
+              <td><input class="input" name="company_slug" value=""></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <button type="button" class="btn btn-secondary btn-small" style="margin-top:8px;" onclick="addRow('companies-table', 'company-row-template')">+ Add company</button>
+    </div>
+
+    <div class="settings-section">
+      <div class="field">
+        <label>Keywords (comma-separated)</label>
+        <input class="input" name="keywords" value="{{ config.keywords|join(', ') }}">
+      </div>
+      <div class="field">
+        <label>Seniority keywords (comma-separated - title must contain at least one)</label>
+        <input class="input" name="seniority_keywords" value="{{ config.seniority_keywords|join(', ') }}">
+      </div>
+      <div class="field">
+        <label>Location filter (comma-separated - blank keeps every location)</label>
+        <input class="input" name="location_filter" value="{{ config.location_filter|join(', ') }}">
+      </div>
+    </div>
+    {% include "_followed_companies.html" %}
+    {% endif %}
+
+    <div class="run-actions">
+      <button type="submit" class="btn btn-secondary">Save settings</button>
+      <select class="input" name="mode" style="max-width:160px;">
+        <option value="test">Test mode</option>
+        <option value="live">Live mode</option>
+      </select>
+      <button type="submit" class="btn btn-primary" formaction="{{ url_for('component_run', component_id=component_id) }}"
+              onclick="return this.form.mode.value !== 'live' || confirm('This makes a real call and may use real API quota/credits. Continue?');">
+        Run (without saving)
+      </button>
+    </div>
+  </form>
+
+  {% if run %}
+  <div class="run-summary text-muted">
+    Run #{{ run.id }} &middot; {{ run.mode|capitalize }} mode &middot; {{ run.status|capitalize }}
+    &middot; {{ run.fetched_count }} found &middot; {{ run.filtered_count }} filtered out
+    &middot; {{ results|length }} staged for review &middot; started {{ run.started_at }}
+    {% if run.filtered_reasons %}
+    <br><span style="font-size:11px;">Filtered:
+      {% for reason, count in run.filtered_reasons.items() %}{{ reason }} ({{ count }}){% if not loop.last %}, {% endif %}{% endfor %}
+    </span>
+    {% endif %}
+    {% if run.error_message %}<br><span class="error">{{ run.error_message }}</span>{% endif %}
+    {% if run.status == 'fetched' %}
+    <br>
+    <form method="post" action="{{ url_for('component_run_filter', component_id=component_id, run_id=run.id) }}" style="display:inline;">
+      <button type="submit" class="btn btn-secondary btn-small">Filter &amp; dedupe now</button>
+    </form>
+    <span style="font-size:11px;">fetched, not yet filtered</span>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Title</th><th>Company</th><th>Location</th><th>Salary</th><th>Posted</th><th>Source</th><th></th></tr></thead>
+      <tbody>
+        {% for r in results %}
+        <tr>
+          <td><a href="{{ r.url }}" target="_blank" rel="noopener" style="color:var(--color-text);font-weight:600;text-decoration:none;">{{ r.title }}</a></td>
+          <td>{{ r.company }}</td>
+          <td>{{ r.location }}</td>
+          <td style="white-space:nowrap;">
+            {% if r.salary_min or r.salary_max %}{{ r.currency }} {{ '{:,}'.format(r.salary_min) }}&ndash;{{ '{:,}'.format(r.salary_max) }}
+            {% else %}<span class="text-muted">Not specified</span>{% endif %}
+          </td>
+          <td style="white-space:nowrap;">{{ r.posted }}</td>
+          <td class="text-muted" style="font-size:11px;">{{ r.source }}</td>
+          <td>
+            <form method="post" action="{{ url_for('component_result_add', component_id=component_id, result_id=r.id) }}">
+              <button type="submit" class="btn btn-secondary btn-small">Add to dashboard</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if run and not results and run.status == 'fetched' %}
+    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">{{ run.fetched_count }} fetched, not yet filtered - click "Filter &amp; dedupe now" above to review them.</div>
+    {% elif run and not results %}
+    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">No results{% if run.status == 'error' %} - see error above{% endif %}.</div>
+    {% elif not run %}
+    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">No runs yet. Test mode uses fixture data, no real call is made.</div>
+    {% endif %}
+  </div>
+
+  <div class="hr"></div>
+
+  <h2>Run history</h2>
+  {% if runs %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Run</th><th>Mode</th><th>Status</th><th>Found</th><th>Filtered</th><th>Started</th></tr></thead>
+      <tbody>
+        {% for r in runs %}
+        <tr>
+          <td><a href="{{ url_for('component_detail', component_id=component_id, run=r.id) }}">#{{ r.id }}</a></td>
+          <td>{{ r.mode|capitalize }}</td>
+          <td><span class="tag {{ 'tag-accent' if r.status == 'error' else 'tag-neutral' }}">{{ r.status|capitalize }}</span></td>
+          <td>{{ r.fetched_count }}</td>
+          <td>{{ r.filtered_count }}</td>
+          <td style="white-space:nowrap;">{{ r.started_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted">No runs yet.</p>
+  {% endif %}
+</div>
+
+<script>
+function addRow(tableId, templateRowId) {
+  const table = document.getElementById(tableId).querySelector('tbody');
+  const template = document.getElementById(templateRowId);
+  const clone = template.cloneNode(true);
+  clone.removeAttribute('id');
+  clone.style.display = '';
+  table.appendChild(clone);
+}
+
+function addQueryRow() {
+  const list = document.getElementById('queries-list');
+  const template = document.getElementById('query-row-template');
+  list.appendChild(template.content.cloneNode(true));
+}
+
+// Employment type checkboxes don't submit themselves (no name) - keep each row's hidden
+// comma field in sync so query_employment_types stays a plain 1-value-per-row form field,
+// same shape as every other query field (see app.py's _parse_serpapi_settings).
+document.addEventListener('change', function (e) {
+  if (!e.target.classList.contains('et-checkbox')) return;
+  const block = e.target.closest('.filters-block');
+  const checked = Array.from(block.querySelectorAll('.et-checkbox:checked')).map(c => c.dataset.value);
+  block.querySelector('.et-hidden').value = checked.join(',');
+});
+</script>
+{% endblock %}

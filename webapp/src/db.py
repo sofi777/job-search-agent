@@ -54,7 +54,7 @@ SEED_PROGRESS = {
     10: {"status": "viewed", "comments": "Job looks solid but comp band unclear"},
 }
 
-_JSON_FIELDS = {"roles", "remote_countries", "eligible_countries", "industries", "priority_weights"}
+_JSON_FIELDS = {"roles", "remote_countries", "eligible_countries", "industries", "priority_weights", "followed_companies"}
 
 
 @contextmanager
@@ -93,7 +93,8 @@ def init_db():
                 currency TEXT NOT NULL DEFAULT 'USD',
                 onboarding_complete INTEGER NOT NULL DEFAULT 0,
                 priority_weights TEXT NOT NULL DEFAULT '{}',
-                last_scan TEXT
+                last_scan TEXT,
+                followed_companies TEXT NOT NULL DEFAULT '[]'
             )
         """)
         conn.execute("""
@@ -211,6 +212,67 @@ def init_db():
             )
         """)
         conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('chunk_size_tokens', '128')")
+
+        # Sourcing components (SerpAPI, RemoteOK, ATS boards, ...) - see src/components/.
+        # Each component's config lives as one JSON blob; run history + the listings a run
+        # found are separate tables so results survive across runs and can be reviewed later.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS component_settings (
+                component_id TEXT PRIMARY KEY,
+                config_json TEXT NOT NULL DEFAULT '{}'
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS component_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                component_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                mode TEXT NOT NULL DEFAULT 'test',
+                status TEXT NOT NULL DEFAULT 'running',
+                fetched_count INTEGER NOT NULL DEFAULT 0,
+                filtered_count INTEGER NOT NULL DEFAULT 0,
+                filtered_reasons TEXT NOT NULL DEFAULT '{}',
+                error_message TEXT,
+                raw_results_json TEXT NOT NULL DEFAULT '[]'
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS component_run_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES component_runs(id),
+                title TEXT NOT NULL DEFAULT '',
+                company TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT '',
+                location TEXT NOT NULL DEFAULT '',
+                remote INTEGER NOT NULL DEFAULT 0,
+                posted TEXT NOT NULL DEFAULT '',
+                salary_min INTEGER NOT NULL DEFAULT 0,
+                salary_max INTEGER NOT NULL DEFAULT 0,
+                currency TEXT NOT NULL DEFAULT 'USD',
+                url TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT ''
+            )
+        """)
+
+        # Migration: followed_companies added after users existed - CREATE TABLE above only
+        # covers fresh DBs.
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN followed_companies TEXT NOT NULL DEFAULT '[]'")
+        except sqlite3.OperationalError:
+            pass  # already migrated
+
+        # Migration: component_runs gained filter/dedup stats (src/filters.py) - CREATE
+        # TABLE above only covers fresh DBs.
+        for column, coltype in (
+            ("filtered_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("filtered_reasons", "TEXT NOT NULL DEFAULT '{}'"),
+            ("raw_results_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE component_runs ADD COLUMN {column} {coltype}")
+            except sqlite3.OperationalError:
+                pass  # already migrated
 
         conn.execute("DROP TABLE IF EXISTS custom_jobs")
         # Migration: job_progress.cover_letter/tailored_resume replaced by the artifacts table.
@@ -384,7 +446,11 @@ def ensure_progress_rows(user_id, job_ids):
 
 
 def insert_job(fields):
-    """Insert a user-added job posting (origin='custom'). Returns its id.
+    """Insert a user-added job posting. Returns its id.
+
+    origin defaults to 'custom' (the "Add Job Posting" URL flow); a sourcing
+    component (see src/components/) passes its own component_id instead, so
+    where a job came from stays visible on the dashboard.
 
     Raises RuntimeError if a job with this url already exists (sample or
     custom): the UNIQUE constraint on jobs.url is what actually prevents the
@@ -395,11 +461,11 @@ def insert_job(fields):
             cur = conn.execute(
                 """INSERT INTO jobs
                    (company, title, source, location, remote, posted, salary_min, salary_max, currency, url, description, origin)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'custom')""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     fields["company"], fields["title"], fields["source"], fields["location"],
                     int(fields["remote"]), fields["posted"], fields["salary_min"], fields["salary_max"],
-                    fields["currency"], fields["url"], fields["description"],
+                    fields["currency"], fields["url"], fields["description"], fields.get("origin", "custom"),
                 ),
             )
         except sqlite3.IntegrityError as e:
@@ -821,6 +887,170 @@ def set_setting(key, value):
             "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+
+
+def get_component_config(component_id):
+    with db_transaction() as conn:
+        row = conn.execute(
+            "SELECT config_json FROM component_settings WHERE component_id = ?", (component_id,)
+        ).fetchone()
+    return json.loads(row["config_json"]) if row else None
+
+
+def save_component_config(component_id, config):
+    with db_transaction() as conn:
+        conn.execute(
+            "INSERT INTO component_settings (component_id, config_json) VALUES (?, ?) "
+            "ON CONFLICT(component_id) DO UPDATE SET config_json = excluded.config_json",
+            (component_id, json.dumps(config)),
+        )
+
+
+def insert_run(component_id, started_at, mode):
+    with db_transaction() as conn:
+        cur = conn.execute(
+            "INSERT INTO component_runs (component_id, started_at, mode) VALUES (?, ?, ?)",
+            (component_id, started_at, mode),
+        )
+        return cur.lastrowid
+
+
+def finish_run(run_id, finished_at, status, fetched_count, error_message=None, filtered_count=0, filtered_reasons=None):
+    with db_transaction() as conn:
+        conn.execute(
+            "UPDATE component_runs SET finished_at = ?, status = ?, fetched_count = ?, error_message = ?, "
+            "filtered_count = ?, filtered_reasons = ? WHERE id = ?",
+            (finished_at, status, fetched_count, error_message, filtered_count, json.dumps(filtered_reasons or {}), run_id),
+        )
+
+
+def save_raw_results(run_id, listings, status, error_message=None):
+    """Persist a run's freshly fetched, not-yet-filtered listings - the fetch stage's only
+    write. status is "fetched" (awaiting a separate filter step) or "error" (the fetch
+    itself failed). Filtering/staging happens later, independently - see apply_run_filters."""
+    with db_transaction() as conn:
+        conn.execute(
+            "UPDATE component_runs SET raw_results_json = ?, fetched_count = ?, status = ?, error_message = ? WHERE id = ?",
+            (json.dumps(listings), len(listings), status, error_message, run_id),
+        )
+
+
+def fetch_raw_results(run_id):
+    """This run's raw fetched listings (plain dicts, same shape as component .run() output),
+    for the filter step to consume. [] once nothing is pending (fresh run, or already filtered
+    and cleared)."""
+    with db_transaction() as conn:
+        row = conn.execute("SELECT raw_results_json FROM component_runs WHERE id = ?", (run_id,)).fetchone()
+    return json.loads(row["raw_results_json"]) if row else []
+
+
+def clear_raw_results(run_id):
+    """Drop a run's raw fetch payload once it's been filtered and staged - no reason to keep
+    two copies of the same listings (raw + component_run_results) around indefinitely."""
+    with db_transaction() as conn:
+        conn.execute("UPDATE component_runs SET raw_results_json = '[]' WHERE id = ?", (run_id,))
+
+
+def _row_to_run(row):
+    run = dict(row)
+    run["filtered_reasons"] = json.loads(run["filtered_reasons"])
+    del run["raw_results_json"]  # heavy blob, fetched separately - see fetch_raw_results
+    return run
+
+
+def fetch_runs(component_id, limit=20):
+    """Most recent runs first."""
+    with db_transaction() as conn:
+        rows = conn.execute(
+            "SELECT * FROM component_runs WHERE component_id = ? ORDER BY id DESC LIMIT ?",
+            (component_id, limit),
+        ).fetchall()
+    return [_row_to_run(r) for r in rows]
+
+
+def fetch_run(run_id):
+    with db_transaction() as conn:
+        row = conn.execute("SELECT * FROM component_runs WHERE id = ?", (run_id,)).fetchone()
+    return _row_to_run(row) if row else None
+
+
+def fetch_all_runs(limit=200):
+    """Most recent runs first, across every component - used by the Filter & dedupe tool
+    page (src/filters.py runs inside every one of these) to show a combined log."""
+    with db_transaction() as conn:
+        rows = conn.execute("SELECT * FROM component_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [_row_to_run(r) for r in rows]
+
+
+def fetch_run_modes_for_urls(urls):
+    """{url: mode} for the most recent run that staged each url - used by the Save to
+    database tool page to show whether an added job came from a test or live run."""
+    urls = list(urls)
+    if not urls:
+        return {}
+    with db_transaction() as conn:
+        placeholders = ",".join("?" * len(urls))
+        rows = conn.execute(
+            f"""SELECT res.url, r.mode FROM component_run_results res
+                JOIN component_runs r ON r.id = res.run_id
+                WHERE res.url IN ({placeholders})
+                ORDER BY r.id ASC""",
+            urls,
+        ).fetchall()
+    return {row["url"]: row["mode"] for row in rows}
+
+
+def insert_run_result(run_id, listing):
+    with db_transaction() as conn:
+        cur = conn.execute(
+            """INSERT INTO component_run_results
+               (run_id, title, company, source, location, remote, posted, salary_min, salary_max, currency, url, description)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_id, listing["title"], listing["company"], listing["source"], listing["location"],
+                int(listing.get("remote", False)), listing.get("posted", ""), listing.get("salary_min", 0),
+                listing.get("salary_max", 0), listing.get("currency", "USD"), listing["url"],
+                listing.get("description", ""),
+            ),
+        )
+        return cur.lastrowid
+
+
+def fetch_staged_urls():
+    """Every url already staged in some run's results, across all components and runs -
+    used to dedup a fresh fetch against listings already waiting for review, not just
+    ones already added to the jobs table."""
+    with db_transaction() as conn:
+        rows = conn.execute("SELECT DISTINCT url FROM component_run_results WHERE url != ''").fetchall()
+    return {r["url"] for r in rows}
+
+
+def fetch_run_results(run_id):
+    with db_transaction() as conn:
+        rows = conn.execute(
+            "SELECT * FROM component_run_results WHERE run_id = ? ORDER BY id", (run_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_run_result(result_id):
+    with db_transaction() as conn:
+        row = conn.execute("SELECT * FROM component_run_results WHERE id = ?", (result_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def fetch_recent_run_results(limit=200):
+    """Most recent staged (post-filter) results across every run, newest first, each
+    tagged with its run's component_id and mode - used by the merged Filter & dedupe +
+    Save tool page (store.get_staged_results_for_review filters out ones already added)."""
+    with db_transaction() as conn:
+        rows = conn.execute(
+            """SELECT res.*, r.component_id, r.mode FROM component_run_results res
+               JOIN component_runs r ON r.id = res.run_id
+               ORDER BY res.id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 init_db()

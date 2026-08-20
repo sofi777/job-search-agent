@@ -4,6 +4,17 @@ A proof-of-concept web app: upload your resume, tell it your preferences, and ge
 personal job board. Tailor each application (cover letter, resume, Q&A answers) via a
 per-job chat, with placeholder AI for suggestions and match scoring.
 
+## Run tests
+
+```bash
+cd webapp
+python -m unittest discover -s tests -p "test_*.py"
+```
+
+Stdlib `unittest`, no new dependency. Currently covers `src/components/` (SerpAPI,
+RemoteOK, ATS boards) and `src/filters.py` - fast, all network calls mocked (filters.py
+needs no mocking - it's pure).
+
 ## Run it locally
 
 ```bash
@@ -131,10 +142,42 @@ webapp/
   function that talks to an LLM), so every caller (tailoring chat, classification,
   preference learning, job extraction) is covered automatically. Top of the page
   shows total and per-model cost/token/call counts.
-- **System Components** (`/components`): a UI-only architecture overview of the
-  planned job-scan agent (Gmail, SerpAPI, ATS boards, RemoteOK feeding a LangGraph
-  agent that filters, extracts, scores, saves, and updates applied status). Cards
-  only, nothing behind them yet - see "What's a placeholder" below.
+- **System Components** (`/components`): architecture overview of the planned
+  job-scan agent (Gmail, SerpAPI, ATS boards, RemoteOK feeding a LangGraph agent
+  that filters, extracts, scores, saves, and updates applied status). SerpAPI,
+  RemoteOK, and ATS boards are live and link to a real settings + run + results page
+  (`src/components/`, see below); of the Tools cards, Filter & dedupe and Save to
+  database are live (wired into every component run, see below); Extract & structure
+  and Update applied status stay Pending until a raw-text source (Gmail) exists, and
+  Score fit stays Pending until job-detail extraction is built. The rest are still
+  just cards.
+- **Sourcing components** (`src/components/`, linked from System Components):
+  SerpAPI (Google Jobs), RemoteOK, and ATS boards (Lever/Greenhouse/Ashby/Workable)
+  each get their own page to configure search criteria (seeded from your profile,
+  freely editable/extendable there), run in test mode (fixture data, no real call)
+  or live mode, and review results with an "Add to dashboard" button per listing.
+  Each component is independent - a run never writes to the jobs table on its own,
+  and no component calls another; a future workflow can wire them together without
+  changing this code. A shared "followed companies" list lives on your profile
+  (`store.followed_companies`) and can be extended directly from the SerpAPI/ATS
+  settings pages. See `src/components/README.md` for what each needs (SerpAPI
+  needs a free API key; RemoteOK and ATS boards need nothing).
+- **Filter & dedupe** (`src/filters.py`): before a run's listings are staged for
+  review, they're gated against your profile's hard preferences - role/title, location,
+  remoteness, work eligibility, salary floor - and deduped (within the batch, against
+  the jobs table, and against anything already staged from an earlier run). There's no
+  separate settings screen for this: it reads your profile live, so editing it on
+  `/profile` is how you change what gets filtered. The run summary and run history on
+  each component's page show how many were filtered and why. Soft preferences
+  (industries, free text) aren't applied here - that's `src/scanner.py`'s `run_scan()`,
+  a separate step that scores jobs already saved to the dashboard.
+- **Tool admin pages** (`/tools/<id>`, linked from every card in System Components'
+  Tools section, `src/tools.py` registry): what that tool does, and for the two live
+  ones, its current live state. Filter & dedupe shows the hard-preference values it's
+  reading right now plus a combined log of every source run's filter/dedup outcome
+  across all components, split into Test/Live tabs. Save to database shows every job
+  added via a sourcing component, tagged with whether it came from a test or live run.
+  The three pending tools just explain what's blocking them.
 
 ## What's a placeholder (by design)
 

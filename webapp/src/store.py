@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import db, rag
+from . import db, filters, rag
 
 TAILOR_TYPES = ["cover_letter", "resume", "qa"]
 PREFERENCE_CATEGORIES = db.PREFERENCE_CATEGORIES
@@ -29,7 +29,7 @@ CURRENCY_OPTIONS = ["USD", "EUR", "GBP", "CAD"]
 PROFILE_FIELDS = [
     "resume_filename", "roles", "home_address", "commute_miles", "remote_ok",
     "remote_countries", "eligible_countries", "industries", "industries_text",
-    "min_salary", "currency", "onboarding_complete",
+    "min_salary", "currency", "onboarding_complete", "followed_companies",
 ]
 
 COUNTRIES = [
@@ -174,6 +174,24 @@ def add_custom_job(fields):
     job_id = db.insert_job(fields)
     reload_jobs()
     return job_id
+
+
+def get_followed_companies():
+    return list(profile["followed_companies"])
+
+
+def save_followed_companies(names):
+    """Overwrite the profile-wide followed-companies list (plain names, no ATS-specific
+    metadata - see src/components/ats.py for the platform+slug that lives alongside it in
+    that component's own config). Used both by /profile and by "apply to profile" on the
+    SerpAPI/ATS component pages."""
+    profile["followed_companies"] = list(dict.fromkeys(n.strip() for n in names if n.strip()))
+    save_profile()
+
+
+def add_followed_companies(names):
+    """Merge new names into the existing list, no duplicates, order preserved."""
+    save_followed_companies(profile["followed_companies"] + list(names))
 
 
 def _seed_sample_jobs_if_needed():
@@ -470,6 +488,119 @@ def get_chunk_size():
 
 def rechunk_knowledge_base(chunk_size):
     rag.rechunk_all(chunk_size)
+
+
+# ---- sourcing components (SerpAPI, RemoteOK, ATS boards - see src/components/) --------
+
+def get_component_config(component_id, default_config):
+    """This component's explicitly saved settings, or default_config (built live from the
+    current profile) if nothing's been saved yet - never persisted here. Persisting the
+    default on first read would freeze it as of whatever moment the page was first opened,
+    so later profile edits (roles, eligible countries, ...) would stop reaching it; only
+    save_component_config (the "Save settings" action) should ever write a row."""
+    config = db.get_component_config(component_id)
+    return config if config is not None else default_config
+
+
+def save_component_config(component_id, config):
+    db.save_component_config(component_id, config)
+
+
+def start_run(component_id, mode):
+    return db.insert_run(component_id, _now(), mode)
+
+
+def finish_run(run_id, status, fetched_count, error_message=None, filtered_count=0, filtered_reasons=None):
+    db.finish_run(run_id, _now(), status, fetched_count, error_message, filtered_count, filtered_reasons)
+
+
+def save_run_result(run_id, listing):
+    db.insert_run_result(run_id, listing)
+
+
+def save_fetch_results(run_id, listings, error_message=None):
+    """The fetch stage's only write: stash a component's raw output on its run, status
+    "fetched" (awaiting filtering) or "error" (nothing came back and the fetch itself
+    failed). Decoupled from filtering on purpose - a component's run() only needs to reach
+    this far; apply_run_filters is a separate step that can run any time after, against
+    just the run_id, with no knowledge of which component or config produced it."""
+    status = "error" if error_message and not listings else "fetched"
+    db.save_raw_results(run_id, listings, status, error_message)
+
+
+def apply_run_filters(run_id):
+    """The filter stage: load a run's raw fetch results (independent of whatever called
+    save_fetch_results, and whenever after it), run them through the hard-preference gate +
+    dedup (src/filters.py), stage what survives, and mark the run finished. No-op if this
+    run has nothing pending (already filtered, or never fetched)."""
+    run = db.fetch_run(run_id)
+    if run is None or run["status"] != "fetched":
+        return
+
+    listings = db.fetch_raw_results(run_id)
+    kept, dropped = filters.filter_and_dedupe(listings, profile, known_urls=get_known_urls())
+    for listing in kept:
+        save_run_result(run_id, listing)
+
+    finish_run(run_id, "error" if run["error_message"] else "ok", run["fetched_count"],
+               run["error_message"], filtered_count=len(dropped), filtered_reasons=filters.summarize_drops(dropped))
+    db.clear_raw_results(run_id)
+
+
+def get_known_urls():
+    """Every url already on the dashboard or already staged from a previous run - one
+    query per run instead of one per listing. Used by src/filters.py's cross-run dedup
+    before a fresh fetch is staged."""
+    return {j["url"] for j in jobs} | db.fetch_staged_urls()
+
+
+def get_component_runs(component_id):
+    return db.fetch_runs(component_id)
+
+
+def get_all_component_runs():
+    return db.fetch_all_runs()
+
+
+def get_run_modes_for_urls(urls):
+    return db.fetch_run_modes_for_urls(urls)
+
+
+def get_run(run_id):
+    return db.fetch_run(run_id)
+
+
+def get_latest_run(component_id):
+    runs = db.fetch_runs(component_id, limit=1)
+    return runs[0] if runs else None
+
+
+def get_run_results(run_id):
+    return db.fetch_run_results(run_id)
+
+
+def get_run_result(result_id):
+    return db.fetch_run_result(result_id)
+
+
+def get_staged_results_for_review(limit=200):
+    """Every filtered/staged result not yet added to the dashboard, most recent first,
+    across every component and run - what the Filter, dedupe & save tool page shows for
+    review (see /tools/filter_dedupe)."""
+    known = {j["url"] for j in jobs}
+    return [r for r in db.fetch_recent_run_results(limit) if r["url"] not in known]
+
+
+def add_run_result_to_dashboard(result_id, component_id):
+    """Insert one previewed result into the real jobs table, tagged with which component
+    found it. Raises RuntimeError (from db.insert_job) if that URL is already on the board."""
+    result = db.fetch_run_result(result_id)
+    if result is None:
+        raise RuntimeError("That result no longer exists.")
+    fields = {**result, "origin": component_id}
+    job_id = db.insert_job(fields)
+    reload_jobs()
+    return job_id
 
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)

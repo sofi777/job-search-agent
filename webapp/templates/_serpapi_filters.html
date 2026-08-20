@@ -1,0 +1,36 @@
+<div class="filters-block">
+  <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:8px; margin-bottom:8px;">
+    <div class="field">
+      <label>Location</label>
+      <input class="input" name="{{ name_prefix }}_location" value="{{ q.location }}" list="location-suggestions" placeholder="Canada">
+    </div>
+    <div class="field">
+      <label>Date posted</label>
+      <select class="input" name="{{ name_prefix }}_date_posted">
+        {% for value, human in serpapi_options.date_posted %}
+        <option value="{{ value }}" {{ 'selected' if q.date_posted == value else '' }}>{{ human }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label>Remote</label>
+      <select class="input" name="{{ name_prefix }}_remote_only">
+        {% for value, human in serpapi_options.remote_only %}
+        <option value="{{ value }}" {{ 'selected' if (q.remote_only and value == '1') or (not q.remote_only and value == '') else '' }}>{{ human }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="field">
+    <label>Employment type</label>
+    <div style="display:flex; gap:14px; flex-wrap:wrap;">
+      {% for value, human in serpapi_options.employment_type %}
+      <label style="display:flex; align-items:center; gap:4px; font-weight:normal;">
+        <input type="checkbox" class="et-checkbox" data-value="{{ value }}" {{ 'checked' if value in q.employment_types else '' }}>
+        {{ human }}
+      </label>
+      {% endfor %}
+    </div>
+    <input type="hidden" class="et-hidden" name="{{ name_prefix }}_employment_types" value="{{ q.employment_types|join(',') }}">
+  </div>
+</div>

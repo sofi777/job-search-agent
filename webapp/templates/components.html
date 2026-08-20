@@ -9,6 +9,8 @@
   .component-card { border: 1px solid var(--color-divider); background: var(--color-surface); padding: var(--space-4); display: flex; flex-direction: column; gap: 6px; }
   .component-card h3 { font-size: 15px; margin: 0; }
   .component-card p { font-size: 13px; margin: 0; }
+  a.component-card { text-decoration: none; color: inherit; }
+  a.component-card:hover { border-color: var(--color-accent); }
 </style>
 
 <div class="container">
@@ -27,24 +29,24 @@
         <p class="text-muted">Job alerts (LinkedIn/Indeed/Wellfound) + applied confirmations</p>
         <span class="tag tag-neutral">Not connected</span>
       </div>
-      <div class="component-card">
+      <a class="component-card" href="{{ url_for('component_detail', component_id='serpapi') }}">
         <div class="kicker">Source &middot; Search API</div>
         <h3>SerpAPI</h3>
         <p class="text-muted">Google Jobs - Indeed, LinkedIn, gov, websites of followed companies</p>
-        <span class="tag tag-neutral">Not connected</span>
-      </div>
-      <div class="component-card">
+        <span class="tag tag-outline">Configure &amp; run</span>
+      </a>
+      <a class="component-card" href="{{ url_for('component_detail', component_id='ats') }}">
         <div class="kicker">Source &middot; Direct API</div>
         <h3>ATS boards</h3>
         <p class="text-muted">Lever, Greenhouse, Ashby, Workable</p>
-        <span class="tag tag-neutral">Not connected</span>
-      </div>
-      <div class="component-card">
+        <span class="tag tag-outline">Configure &amp; run</span>
+      </a>
+      <a class="component-card" href="{{ url_for('component_detail', component_id='remoteok') }}">
         <div class="kicker">Source &middot; API</div>
         <h3>RemoteOK</h3>
         <p class="text-muted">Remote-tagged listings API</p>
-        <span class="tag tag-neutral">Not connected</span>
-      </div>
+        <span class="tag tag-outline">Configure &amp; run</span>
+      </a>
     </div>
   </section>
 
@@ -83,36 +85,30 @@
     <h2>Tools</h2>
     <p class="text-muted">Actions the agent takes on each listing it finds.</p>
     <div class="component-grid">
-      <div class="component-card">
+      <a class="component-card" href="{{ url_for('tool_detail', tool_id='filter_dedupe') }}">
         <div class="kicker">Tool</div>
-        <h3>Filter &amp; dedupe</h3>
-        <p class="text-muted">Location/visa gate + cross-source dedup</p>
-        <span class="tag tag-neutral">Not connected</span>
-      </div>
-      <div class="component-card">
+        <h3>Filter, dedupe &amp; save</h3>
+        <p class="text-muted">Hard-preference gate (role/title, location, remoteness, work eligibility, salary floor) + cross-source dedup, run per fetch, then "Add to dashboard" &rarr; jobs table.</p>
+        <span class="tag tag-outline">Live</span>
+      </a>
+      <a class="component-card" href="{{ url_for('tool_detail', tool_id='extract_structure') }}">
         <div class="kicker">Tool</div>
         <h3>Extract &amp; structure</h3>
         <p class="text-muted">Fetch listing, parse into job fields</p>
         <span class="tag tag-neutral">Not connected</span>
-      </div>
-      <div class="component-card">
+      </a>
+      <a class="component-card" href="{{ url_for('tool_detail', tool_id='score_fit') }}">
         <div class="kicker">Tool</div>
         <h3>Score fit</h3>
-        <p class="text-muted">LLM scoring vs. profile</p>
+        <p class="text-muted">LLM scoring vs. profile's soft preferences (industries, free text) - not run during sourcing</p>
         <span class="tag tag-neutral">Not connected</span>
-      </div>
-      <div class="component-card">
-        <div class="kicker">Tool</div>
-        <h3>Save to database</h3>
-        <p class="text-muted">Idempotent upsert &rarr; /dashboard</p>
-        <span class="tag tag-neutral">Not connected</span>
-      </div>
-      <div class="component-card">
+      </a>
+      <a class="component-card" href="{{ url_for('tool_detail', tool_id='update_applied_status') }}">
         <div class="kicker">Tool</div>
         <h3>Update applied status</h3>
         <p class="text-muted">Match confirmation email &rarr; job, mark Applied or insert new row</p>
         <span class="tag tag-neutral">Not connected</span>
-      </div>
+      </a>
     </div>
   </section>
 </div>

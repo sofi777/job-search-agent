@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}{{ meta.name }} - Dream Job Landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<style>
+  .filters-list { display: grid; grid-template-columns: 220px 1fr; gap: 4px 12px; font-size: 13px; max-width: 640px; }
+  .filters-list dt { color: var(--color-neutral-700); }
+  .filters-list dd { margin: 0; }
+  .mode-tabs { display: flex; gap: 8px; margin: var(--space-3) 0; }
+  .mode-tab { font-size: 12px; padding: 4px 10px; border: 1px solid var(--color-divider); background: var(--color-surface); cursor: pointer; }
+  .mode-tab.active { border-color: var(--color-accent); font-weight: 600; }
+  .mode-panel { display: none; }
+  .mode-panel.active { display: block; }
+</style>
+
+<div class="container">
+  <div style="margin-bottom:var(--space-4);">
+    <a href="{{ url_for('system_components') }}" class="text-muted" style="font-size:12px;text-decoration:none;">&larr; System Components</a>
+    <h1>{{ meta.name }}</h1>
+    <div class="text-muted">{{ meta.description }}</div>
+  </div>
+
+  {% if meta.status == 'pending' %}
+  <div class="hr"></div>
+  <span class="tag tag-neutral">Not connected</span>
+  <p class="text-muted" style="max-width:640px;margin-top:8px;">{{ meta.blocked_reason }}</p>
+  {% endif %}
+
+  {% if tool_id == 'filter_dedupe' %}
+  <div class="hr"></div>
+  <h2>Active filters</h2>
+  <p class="text-muted" style="font-size:12px;">Read live from your profile - there's no separate config here.
+    <a href="{{ url_for('profile_page') }}">Edit on /profile</a> to change what gets filtered.</p>
+  <dl class="filters-list">
+    {% for f in active_filters %}
+    <dt>{{ f.label }}</dt><dd>{{ f.value }}</dd>
+    {% endfor %}
+  </dl>
+
+  <div class="hr"></div>
+  <h2>Run log</h2>
+  <p class="text-muted" style="font-size:12px;">Every source run (SerpAPI/RemoteOK/ATS) - a run only fetches, so anything "Fetched" is
+    waiting on the Run button below to filter and stage it. Split by mode.</p>
+  <div class="mode-tabs">
+    <button type="button" class="mode-tab active" data-mode="test">Test ({{ runs_by_mode.test|length }})</button>
+    <button type="button" class="mode-tab" data-mode="live">Live ({{ runs_by_mode.live|length }})</button>
+  </div>
+  {% for mode in ["test", "live"] %}
+  <div class="mode-panel {{ 'active' if mode == 'test' else '' }}" data-mode="{{ mode }}">
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>Run</th><th>Source</th><th>Status</th><th>Found</th><th>Filtered</th><th>Staged</th><th>Started</th><th></th></tr></thead>
+        <tbody>
+          {% for r in runs_by_mode[mode] %}
+          <tr>
+            <td><a href="{{ url_for('component_detail', component_id=r.component_id, run=r.id) }}">#{{ r.id }}</a></td>
+            <td>{{ component_names.get(r.component_id, r.component_id) }}</td>
+            <td><span class="tag {{ 'tag-accent' if r.status == 'error' else 'tag-neutral' }}">{{ r.status|capitalize }}</span></td>
+            <td>{{ r.fetched_count }}</td>
+            <td>
+              {{ r.filtered_count }}
+              {% if r.filtered_reasons %}
+              <span class="text-muted" style="font-size:11px;">({% for reason, count in r.filtered_reasons.items() %}{{ reason }} ({{ count }}){% if not loop.last %}, {% endif %}{% endfor %})</span>
+              {% endif %}
+            </td>
+            <td>{{ r.fetched_count - r.filtered_count }}</td>
+            <td style="white-space:nowrap;">{{ r.started_at }}</td>
+            <td>
+              {% if r.status == 'fetched' %}
+              <form method="post" action="{{ url_for('component_run_filter', component_id=r.component_id, run_id=r.id) }}">
+                <button type="submit" class="btn btn-primary btn-small">Run</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if not runs_by_mode[mode] %}
+      <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">No {{ mode }} runs yet.</div>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <div class="hr"></div>
+  <h2>Staged for review</h2>
+  <p class="text-muted" style="font-size:12px;">Filtered results not yet on your dashboard - add the ones worth pursuing.</p>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Title</th><th>Company</th><th>Source</th><th>Run</th><th></th></tr></thead>
+      <tbody>
+        {% for r in staged_results %}
+        <tr>
+          <td><a href="{{ r.url }}" target="_blank" rel="noopener" style="color:var(--color-text);font-weight:600;text-decoration:none;">{{ r.title }}</a></td>
+          <td>{{ r.company }}</td>
+          <td class="text-muted" style="font-size:11px;">{{ r.source }}</td>
+          <td><a href="{{ url_for('component_detail', component_id=r.component_id, run=r.run_id) }}">#{{ r.run_id }}</a></td>
+          <td>
+            <form method="post" action="{{ url_for('component_result_add', component_id=r.component_id, result_id=r.id) }}">
+              <button type="submit" class="btn btn-secondary btn-small">Add to dashboard</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not staged_results %}
+    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">Nothing staged right now.</div>
+    {% endif %}
+  </div>
+
+  <div class="hr"></div>
+  <h2>Saved to dashboard</h2>
+  <p class="text-muted" style="font-size:12px;">Every job on your dashboard added via a sourcing component, tagged with the mode of the run that staged it.</p>
+  <div class="mode-tabs">
+    <button type="button" class="mode-tab active" data-mode="test">Test ({{ jobs_by_mode.test|length }})</button>
+    <button type="button" class="mode-tab" data-mode="live">Live ({{ jobs_by_mode.live|length }})</button>
+    {% if jobs_by_mode.unknown %}<button type="button" class="mode-tab" data-mode="unknown">Unknown ({{ jobs_by_mode.unknown|length }})</button>{% endif %}
+  </div>
+  {% for mode in ["test", "live", "unknown"] %}
+  {% if mode != 'unknown' or jobs_by_mode.unknown %}
+  <div class="mode-panel {{ 'active' if mode == 'test' else '' }}" data-mode="{{ mode }}">
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>Title</th><th>Company</th><th>Source</th><th>Added via</th></tr></thead>
+        <tbody>
+          {% for j in jobs_by_mode[mode] %}
+          <tr>
+            <td><a href="{{ url_for('job_detail', job_id=j.id) }}">{{ j.title }}</a></td>
+            <td>{{ j.company }}</td>
+            <td class="text-muted" style="font-size:11px;">{{ j.source }}</td>
+            <td>{{ component_names.get(j.origin, j.origin) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if not jobs_by_mode[mode] %}
+      <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">No jobs added from a {{ mode }} run yet.</div>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+  {% endfor %}
+  {% endif %}
+</div>
+
+<script>
+document.querySelectorAll('.mode-tabs').forEach(function (tabs) {
+  tabs.addEventListener('click', function (e) {
+    if (!e.target.classList.contains('mode-tab')) return;
+    const mode = e.target.dataset.mode;
+    const group = tabs.parentElement;
+    group.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t === e.target));
+    group.querySelectorAll('.mode-panel').forEach(p => p.classList.toggle('active', p.dataset.mode === mode));
+  });
+});
+</script>
+{% endblock %}

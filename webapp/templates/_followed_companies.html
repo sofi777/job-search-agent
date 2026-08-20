@@ -1,0 +1,10 @@
+<div class="settings-section">
+  <label>Followed companies</label>
+  {% if followed_companies %}
+  <div class="chip-row">
+    {% for c in followed_companies %}<span class="chip">{{ c }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  <input class="input" name="new_followed_companies" placeholder="Add companies, comma-separated">
+  <p class="text-muted" style="font-size:12px;">Comma-separated - saved on Save.</p>
+</div>

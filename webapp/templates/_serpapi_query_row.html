@@ -1,0 +1,22 @@
+<div class="query-row" style="border:1px solid var(--color-divider); padding:var(--space-3); margin-bottom:var(--space-3);">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
+    <input class="input" name="query_label" value="{{ q.label }}" placeholder="Label (e.g. Primary roles)" style="max-width:260px;">
+    <button type="button" class="btn btn-secondary btn-small" onclick="this.closest('.query-row').remove()">Remove</button>
+  </div>
+  <div style="display:grid; grid-template-columns: 2fr 1fr; gap:8px; margin-bottom:8px;">
+    <div class="field">
+      <label>Job titles / keywords (comma-separated)</label>
+      <input class="input" name="query_terms" value="{{ q.terms|join(', ') }}" placeholder="Senior Product Manager, Group Product Manager">
+    </div>
+    <div class="field">
+      <label>Match</label>
+      <select class="input" name="query_match">
+        {% for value, human in serpapi_options.match %}
+        <option value="{{ value }}" {{ 'selected' if q.match == value else '' }}>{{ human }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  {% set name_prefix = "query" %}
+  {% include "_serpapi_filters.html" %}
+</div>
