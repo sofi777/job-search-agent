@@ -23,9 +23,11 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
 - **`src/store.py`** - in-memory view backed by `db.py`: user profile, jobs (DB rows +
   this user's progress and latest fit score merged in - see `reload_jobs()`), priority
   weights (unused since fit scoring went LLM-based, see `src/scanner.py` - kept as dead
-  data, not wired to anything). Every mutation goes through a `save_*()`/`update_*()`
-  call here. Also owns the flat-file logs (`data/results.json` for ratings) that don't
-  need a full table.
+  data, not wired to anything). `JOB_STATUSES` is the full set of job statuses (dashboard
+  status dropdown, `app.py`'s `/jobs/<id>/status`); `TERMINAL_STATUSES` (applied/rejected/
+  irrelevant) is the subset `scanner.run_scan(pending_only=True)` skips re-scoring. Every
+  mutation goes through a `save_*()`/`update_*()` call here. Also owns the flat-file logs
+  (`data/results.json` for ratings) that don't need a full table.
 - **`src/ai.py`** - `suggest_roles`/`suggest_home_address` are placeholders. `score_job()`
   and `extract_job_posting()` are real LLM calls via `src/agents.py`.
 - **`src/agents.py`** - the one module that talks to an LLM (OpenRouter transport:
@@ -37,13 +39,17 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
 - **`src/files.py`** - `extract_text()`: .pdf/.docx/.txt/.md -> plain text.
 - **`src/rag.py`** - chunking + sentence-transformers embeddings + Chroma retrieval
   for the tailoring knowledge base.
-- **`src/scanner.py`** - `run_scan(mode, model)`: the single entry point for fit-scoring
-  jobs already in the DB (soft signals only - resume/story-bank skill fit and
+- **`src/scanner.py`** - `run_scan(mode, model, pending_only=False)`: the single entry point
+  for fit-scoring jobs already in the DB (soft signals only - resume/story-bank skill fit and
   industries/free-text alignment via `ai.score_job`; role/title, location, remoteness,
   salary are already hard-filtered before a job reaches the jobs table, see
   `src/filters.py`, so scoring never re-checks them). Called from onboarding completion,
   the dashboard's "Run scan" button, data reload (all via the `mode="live"` default), and
-  the Score fit tool page (`/tools/score_fit`, explicit mode/model from the run form).
+  the Score fit tool page (`/tools/score_fit`, explicit mode/model/pending_only from the run
+  form). `pending_only` skips jobs in `store.TERMINAL_STATUSES` (applied/rejected/irrelevant)
+  - the user has already decided on those, so nothing left to re-judge; skipped jobs keep
+  their last score (`db.fetch_latest_scores` reads each job's most recent live score, not one
+  run's full result set, so a partial rerun can't blank out jobs it didn't touch).
   Every call logs a `scoring_runs` row regardless of caller, and never raises - a failure
   mid-run is recorded on the run (status `"error"`) and returned via the run id, not
   thrown. `mode="test"` still makes a real LLM call per job (not a fixture, unlike

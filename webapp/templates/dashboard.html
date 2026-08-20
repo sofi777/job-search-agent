@@ -79,7 +79,7 @@
     </div>
   </form>
   <div class="toolbar">
-    {% for key, label in [('all','All'), ('new','New'), ('viewed','Viewed'), ('applied','Applied')] %}
+    {% for key, label in [('all','All'), ('new','New'), ('viewed','Viewed'), ('applied','Applied'), ('rejected','Rejected'), ('irrelevant','Irrelevant')] %}
     <a href="{{ url_for('dashboard', sort=sort_key, dir=sort_dir, status=key, q=query) }}"
        class="btn btn-small {{ 'btn-secondary active' if status_filter == key else 'btn-secondary' }}">{{ label }}</a>
     {% endfor %}
@@ -122,7 +122,7 @@
           <td>
             <form method="post" action="{{ url_for('job_status', job_id=job.id) }}">
               <select name="status" class="input tag {{ 'tag-accent' if job.status == 'new' else 'tag-neutral' }}" style="width:auto;min-height:28px;padding:3px 8px;border:none;" onchange="this.form.submit()">
-                {% for s in ['new', 'viewed', 'applied'] %}
+                {% for s in job_statuses %}
                 <option value="{{ s }}" {{ 'selected' if job.status == s else '' }}>{{ s|capitalize }}</option>
                 {% endfor %}
               </select>

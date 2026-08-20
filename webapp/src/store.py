@@ -15,6 +15,13 @@ from . import db, filters, rag
 TAILOR_TYPES = ["cover_letter", "resume", "qa"]
 PREFERENCE_CATEGORIES = db.PREFERENCE_CATEGORIES
 
+# "rejected"/"irrelevant" are set by the user to mark a job they don't want - kept (not
+# deleted) so get_known_urls still dedupes it out of future searches. Both are excluded,
+# along with "applied", from re-scoring (see scanner.run_scan's pending_only) - there's no
+# more fit to judge once the user has already decided.
+JOB_STATUSES = ["new", "viewed", "applied", "rejected", "irrelevant"]
+TERMINAL_STATUSES = {"applied", "rejected", "irrelevant"}
+
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
@@ -23,7 +30,11 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 JOBS_FILE = DATA_DIR / "jobs.json"
 UPLOADS_DIR = DATA_DIR / "uploads"
 
-INDUSTRY_OPTIONS = ["Climate tech", "Healthcare", "Fintech", "Developer tools", "Consumer", "No preference"]
+INDUSTRY_OPTIONS = [
+    "Climate tech", "Healthcare", "Fintech", "Developer tools", "Consumer",
+    "Mobility", "Govtech", "SaaS", "AI/ML", "Cybersecurity", "E-commerce",
+    "Edtech", "Proptech", "Gaming", "Biotech", "No preference",
+]
 CURRENCY_OPTIONS = ["USD", "EUR", "GBP", "CAD"]
 
 PROFILE_FIELDS = [

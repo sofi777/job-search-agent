@@ -128,6 +128,44 @@ class RunScanTests(unittest.TestCase):
         self.assertEqual(run["status"], "error")
         self.assertIn("No resume", run["error_message"])
 
+    @mock.patch("src.ai.score_job")
+    def test_pending_only_skips_terminal_status_jobs(self, score_job):
+        score_job.return_value = {"score": 91, "summary": "Great fit"}
+        pending_id = next(j["id"] for j in store.jobs if j["status"] not in store.TERMINAL_STATUSES)
+        newly_rejected_id = next(j["id"] for j in store.jobs if j["id"] != pending_id)
+        store.update_job_progress(newly_rejected_id, status="rejected")
+        pending_count = sum(1 for j in store.jobs if j["status"] not in store.TERMINAL_STATUSES)
+
+        run_id = scanner.run_scan(mode="live", model="m", pending_only=True)
+
+        self.assertEqual(score_job.call_count, pending_count)
+        run = store.get_scoring_run(run_id)
+        self.assertEqual(run["scored_count"], pending_count)
+        scored_job_ids = {r["job_id"] for r in store.get_scoring_run_results(run_id)}
+        self.assertNotIn(newly_rejected_id, scored_job_ids)
+        self.assertIn(pending_id, scored_job_ids)
+
+    @mock.patch("src.ai.score_job")
+    def test_pending_only_keeps_the_excluded_jobs_last_score(self, score_job):
+        score_job.return_value = {"score": 70, "summary": "first pass"}
+        scanner.run_scan(mode="live", model="m")  # scores every job once
+        applied_id = store.jobs[0]["id"]
+        store.update_job_progress(applied_id, status="applied")
+
+        score_job.return_value = {"score": 95, "summary": "second pass"}
+        scanner.run_scan(mode="live", model="m", pending_only=True)
+
+        self.assertEqual(store.get_job(applied_id)["match"], 70)  # untouched, not wiped
+        other_id = next(j["id"] for j in store.jobs if j["id"] != applied_id)
+        self.assertEqual(store.get_job(other_id)["match"], 95)
+
+    def test_pending_only_still_fails_clearly_without_a_resume(self):
+        _delete_profile_document("resume")
+        with mock.patch("src.ai.agents.send_message") as send_message:
+            run_id = scanner.run_scan(mode="live", pending_only=True)
+            send_message.assert_not_called()
+        self.assertEqual(store.get_scoring_run(run_id)["status"], "error")
+
 
 if __name__ == "__main__":
     unittest.main()

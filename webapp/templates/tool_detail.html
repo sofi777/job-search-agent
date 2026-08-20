@@ -37,7 +37,8 @@
     industries/free-text preferences (src/ai.score_job) - role/title, location, remoteness, and salary are already hard-filtered
     before a job gets here, so this only judges what filtering can't. Test mode makes real LLM calls (not a fixture - it's meant
     to actually exercise the scorer), but always on the free default model regardless of what's picked above, and never updates
-    the dashboard. Live mode uses the model you pick and updates the dashboard on success.</p>
+    the dashboard. Live mode uses the model you pick and updates the dashboard on success. "Pending jobs only" re-scores
+    everything except jobs marked applied/rejected/irrelevant, leaving their existing scores untouched.</p>
   <form method="post" action="{{ url_for('score_fit_run') }}" class="run-actions">
     <select class="input" name="model" id="score-fit-model" style="max-width:260px;" disabled title="Test mode always uses the free default model - switch to Live mode to pick one">
       {% for m in model_options %}
@@ -49,6 +50,10 @@
       <option value="test">Test mode</option>
       <option value="live">Live mode</option>
     </select>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;">
+      <input type="checkbox" name="pending_only">
+      Pending jobs only (skip applied/rejected/irrelevant)
+    </label>
     <button type="submit" class="btn btn-primary"
             onclick="return this.form.mode.value !== 'live' || confirm('This scores every job for real (LLM calls) and updates your dashboard. Continue?');">
       Run

@@ -1260,18 +1260,22 @@ def set_message_preference_checked(message_id, checked_at):
 
 
 def fetch_latest_scores():
-    """{job_id: {score, summary}} from the most recently completed live-mode run - what the
-    dashboard shows. Test runs never touch this; a failed live run (status != 'ok') doesn't
-    either, so a partial failure never overwrites the last good set of scores."""
+    """{job_id: {score, summary}} from each job's most recently completed live-mode run - what
+    the dashboard shows. Per-job, not per-run: a pending-only rescan (see scanner.run_scan)
+    only covers a subset of jobs, so a job it skips keeps the score from its own last live run
+    rather than losing it because that run wasn't the latest overall. Test runs never touch
+    this; a failed live run (status != 'ok') doesn't either, so a partial failure never
+    overwrites the last good score."""
     with db_transaction() as conn:
-        run = conn.execute(
-            "SELECT id FROM scoring_runs WHERE mode = 'live' AND status = 'ok' ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if not run:
-            return {}
-        rows = conn.execute(
-            "SELECT job_id, score, summary FROM scoring_run_results WHERE run_id = ?", (run["id"],)
-        ).fetchall()
+        rows = conn.execute("""
+            SELECT job_id, score, summary FROM (
+                SELECT res.job_id, res.score, res.summary,
+                       ROW_NUMBER() OVER (PARTITION BY res.job_id ORDER BY run.id DESC) AS rn
+                FROM scoring_run_results res
+                JOIN scoring_runs run ON run.id = res.run_id
+                WHERE run.mode = 'live' AND run.status = 'ok'
+            ) WHERE rn = 1
+        """).fetchall()
     return {r["job_id"]: {"score": r["score"], "summary": r["summary"]} for r in rows}
 
 

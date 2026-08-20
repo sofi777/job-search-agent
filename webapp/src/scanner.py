@@ -23,14 +23,21 @@ def _document_text(doc_type):
     return doc["content"] if doc else ""
 
 
-def run_scan(mode="live", model=None):
-    """Score every job in store.jobs, via real ai.score_job calls either way - mode "test"
+def run_scan(mode="live", model=None, pending_only=False):
+    """Score jobs in store.jobs, via real ai.score_job calls either way - mode "test"
     isn't a fixture (a fake score would tell you nothing about whether the prompt/parsing
     actually works), it just forces the model to agents.DEFAULT_MODEL (a free OpenRouter
     model) regardless of what's passed in, so a dry run costs nothing no matter what's
     selected on the form. mode "live" uses whatever model is given and, on success,
     refreshes store.jobs so the dashboard shows the new scores; "test" never touches the
-    dashboard. Returns the scoring_runs id either way.
+    dashboard.
+
+    pending_only skips jobs already in a store.TERMINAL_STATUS (applied/rejected/irrelevant) -
+    the user has already decided on those, so there's no fit left to (re-)judge. Jobs skipped
+    this way keep their last score (see db.fetch_latest_scores, which reads each job's most
+    recent live score rather than assuming one run covers every job).
+
+    Returns the scoring_runs id either way.
     """
     live = mode == "live"
     model = (model or agents.DEFAULT_MODEL) if live else agents.DEFAULT_MODEL
@@ -43,12 +50,14 @@ def run_scan(mode="live", model=None):
     story_bank_text = _document_text("story_bank")
     industries, industries_text = store.profile["industries"], store.profile["industries_text"]
 
+    jobs = [j for j in store.jobs if j["status"] not in store.TERMINAL_STATUSES] if pending_only else store.jobs
+
     scored, error = 0, None
-    for job in store.jobs:
+    for job in jobs:
         try:
             result = ai.score_job(job, resume_text, story_bank_text, industries, industries_text, model)
         except Exception as e:
-            error = f"Stopped after {scored} of {len(store.jobs)} jobs: {e}"
+            error = f"Stopped after {scored} of {len(jobs)} jobs: {e}"
             break
         store.save_scoring_result(run_id, job["id"], result["score"], result["summary"])
         scored += 1

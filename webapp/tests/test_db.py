@@ -375,6 +375,26 @@ class ScoringRunTests(DbTestCase):
 
         self.assertEqual(db.fetch_latest_scores(), {job_id: {"score": 90, "summary": "new"}})
 
+    def test_fetch_latest_scores_keeps_a_jobs_own_last_score_when_a_later_run_skips_it(self):
+        # A pending-only rescan (scanner.run_scan(pending_only=True)) only covers a subset of
+        # jobs - a job it skips must keep its score from its own last run, not lose it just
+        # because that run isn't the latest overall (see src/scanner.py).
+        scored_id, skipped_id = make_job("https://x.com/1"), make_job("https://x.com/2")
+
+        full_run = db.insert_scoring_run("t1", "live", "m")
+        db.insert_scoring_result(full_run, scored_id, 40, "first pass")
+        db.insert_scoring_result(full_run, skipped_id, 60, "first pass")
+        db.finish_scoring_run(full_run, "t1b", "ok", 2)
+
+        partial_run = db.insert_scoring_run("t2", "live", "m")
+        db.insert_scoring_result(partial_run, scored_id, 95, "second pass")
+        db.finish_scoring_run(partial_run, "t2b", "ok", 1)
+
+        self.assertEqual(db.fetch_latest_scores(), {
+            scored_id: {"score": 95, "summary": "second pass"},
+            skipped_id: {"score": 60, "summary": "first pass"},
+        })
+
     def test_fetch_latest_scores_ignores_test_mode_and_failed_runs(self):
         job_id = make_job("https://x.com/1")
 

@@ -327,6 +327,7 @@ def dashboard():
         query=request.args.get("q", ""),
         add_job_error=session.pop("add_job_error", None),
         add_job_success=session.pop("add_job_success", None),
+        job_statuses=store.JOB_STATUSES,
     )
 
 
@@ -392,14 +393,11 @@ def job_apply(job_id):
     return redirect(url_for("job_detail", job_id=job_id))
 
 
-JOB_STATUSES = ["new", "viewed", "applied"]
-
-
 @app.route("/jobs/<int:job_id>/status", methods=["POST"])
 @login_required
 def job_status(job_id):
     new_status = request.form.get("status")
-    if store.get_job(job_id) is not None and new_status in JOB_STATUSES:
+    if store.get_job(job_id) is not None and new_status in store.JOB_STATUSES:
         store.update_job_progress(job_id, status=new_status)
     return redirect(request.referrer or url_for("dashboard"))
 
@@ -752,23 +750,23 @@ def _parse_csv(value):
 
 def _parse_serpapi_settings(form):
     queries = []
-    for label, terms, match, location, date_posted, employment_types, remote_only in zip(
+    for label, terms, match, location, date_posted, employment_types, work_mode in zip(
         form.getlist("query_label"), form.getlist("query_terms"), form.getlist("query_match"),
         form.getlist("query_location"), form.getlist("query_date_posted"),
-        form.getlist("query_employment_types"), form.getlist("query_remote_only"),
+        form.getlist("query_employment_types"), form.getlist("query_work_mode"),
     ):
         terms = _parse_csv(terms)
         if terms:
             queries.append({
                 "label": label.strip() or "Search", "terms": terms, "match": match,
                 "location": location.strip(), "date_posted": date_posted,
-                "employment_types": _parse_csv(employment_types), "remote_only": bool(remote_only),
+                "employment_types": _parse_csv(employment_types), "work_mode": work_mode or "any",
             })
     followed_filters = {
         "location": form.get("followed_location", "").strip(),
         "date_posted": form.get("followed_date_posted", "month"),
         "employment_types": _parse_csv(form.get("followed_employment_types", "")),
-        "remote_only": bool(form.get("followed_remote_only")),
+        "work_mode": form.get("followed_work_mode", "any") or "any",
     }
     return {
         "queries": queries, "use_followed_companies": bool(form.get("use_followed_companies")),
@@ -841,9 +839,10 @@ def component_detail(component_id):
         followed_companies=store.get_followed_companies(),
         serpapi_options={
             "date_posted": comp.serpapi.DATE_POSTED_OPTIONS, "match": comp.serpapi.MATCH_OPTIONS,
-            "employment_type": comp.serpapi.EMPLOYMENT_TYPE_OPTIONS, "remote_only": comp.serpapi.REMOTE_ONLY_OPTIONS,
+            "employment_type": comp.serpapi.EMPLOYMENT_TYPE_OPTIONS, "work_mode": comp.serpapi.WORK_MODE_OPTIONS,
         } if component_id == "serpapi" else None,
-        location_suggestions=store.profile.get("eligible_countries", []) + store.profile.get("remote_countries", []),
+        location_suggestions=([store.profile["home_address"]] if store.profile.get("home_address") else [])
+        + store.profile.get("eligible_countries", []) + store.profile.get("remote_countries", []),
         settings_saved=request.args.get("saved"),
         add_job_error=session.pop("add_job_error", None),
         add_job_success=session.pop("add_job_success", None),
@@ -993,7 +992,8 @@ def score_fit_run():
     # credit-spending run.
     mode = "live" if request.form.get("mode") == "live" else "test"
     model = request.form.get("model") or agents.DEFAULT_MODEL
-    run_id = scanner.run_scan(mode=mode, model=model)
+    pending_only = request.form.get("pending_only") == "on"
+    run_id = scanner.run_scan(mode=mode, model=model, pending_only=pending_only)
     return redirect(url_for("tool_detail", tool_id="score_fit", run=run_id))
 
 
