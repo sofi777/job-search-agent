@@ -6,10 +6,14 @@ and run them. None of these write to the main jobs table automatically; each res
 run's results page has its own "Add to dashboard" button. Nothing here is scheduled -
 every run is manually triggered.
 
-Before a run's listings are staged for review, `app.py`'s `component_run()` route runs
-them through `../filters.py` - a hard-preference gate (role/title, location, remoteness,
-work eligibility, salary floor, all read live from the profile) plus dedup (within the
-batch, against the jobs table, and against anything already staged from a prior run). See
+A component's own run only fetches - every listing it returns is staged immediately (kept,
+addable) and shown on that component's own page, unfiltered. Filtering is a separate,
+explicit step, only run from the Filter, dedupe & save tool page (`/tools/filter_dedupe`,
+`store.apply_run_filters`) against a `run_id` - a hard-preference gate (role/title,
+location, remoteness, work eligibility, salary floor, all read live from the profile) plus
+dedup (within the batch, against the jobs table, and against anything already kept from a
+prior run). It flips whatever doesn't survive to "filtered" with a reason, shown per job
+on that tool page - it never removes anything from a component's own page. See
 `../filters.py`'s docstring for the full rule set. Nothing here calls that module directly
 - it's cross-cutting, not a source.
 
@@ -24,12 +28,17 @@ sketch) can call these same functions directly without any changes here.
 Runs one or more configured Google Jobs searches, plus an optional extra search across
 your followed companies by name (its own SerpAPI call, kept separate so it isn't bound to
 your role queries' filters). Each query block, including the followed-companies one, has
-the same filter fields: location, date posted, employment type (multi-select), and
-remote-only; the query blocks additionally take job titles/keywords (comma-separated,
-combined with "any"/"all" matching) - followed companies always searches by company name
-instead. Field values map to SerpAPI's `google_jobs` engine params - see
-`DATE_POSTED_OPTIONS`/`EMPLOYMENT_TYPE_OPTIONS`/etc in `serpapi.py` for the full
-technical-value <-> label mapping.
+the same filter fields: location, date posted, employment type (multi-select), and work
+mode (any / local only / remote only); the query blocks additionally take job
+titles/keywords (comma-separated, combined with "any"/"all" matching) - followed
+companies always searches by company name instead. The default query seeds location from
+your profile's home address (not a work-eligibility country) and defaults to local only,
+so a fresh setup searches near you instead of defaulting to a whole country. Field values
+map to SerpAPI's `google_jobs` engine params - see
+`DATE_POSTED_OPTIONS`/`EMPLOYMENT_TYPE_OPTIONS`/`WORK_MODE_OPTIONS` in `serpapi.py` for
+the full technical-value <-> label mapping. SerpAPI itself only supports a remote-only
+filter (`ltype=1`); "local only" is done by fetching normally and dropping any result
+flagged remote.
 
 **Getting a key:**
 1. Sign up at [serpapi.com](https://serpapi.com) - the free plan includes 250 searches/month.

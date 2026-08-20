@@ -253,7 +253,8 @@
   <div class="hr"></div>
   <h2>Run log</h2>
   <p class="text-muted" style="font-size:12px;">Every source run (SerpAPI/RemoteOK/ATS) - a run only fetches, so anything "Fetched" is
-    waiting on the Run button below to filter and stage it. Split by mode.</p>
+    waiting on the Run button below to filter it. Once filtered, expand "Per-job verdict" on
+    a row to see which listings were kept vs. filtered out, and why. Split by mode.</p>
   <div class="mode-tabs">
     <button type="button" class="mode-tab active" data-mode="test">Test ({{ runs_by_mode.test|length }})</button>
     <button type="button" class="mode-tab" data-mode="live">Live ({{ runs_by_mode.live|length }})</button>
@@ -286,6 +287,28 @@
               {% endif %}
             </td>
           </tr>
+          {% if r.job_results %}
+          <tr>
+            <td colspan="7" style="padding:0;">
+              <details>
+                <summary style="cursor:pointer;padding:var(--space-2) var(--space-4);font-size:12px;">Per-job verdict ({{ r.job_results|length }})</summary>
+                <table class="table" style="margin:0;">
+                  <thead><tr><th>Title</th><th>Company</th><th>Status</th><th>Reason</th></tr></thead>
+                  <tbody>
+                    {% for j in r.job_results %}
+                    <tr>
+                      <td><a href="{{ j.url }}" target="_blank" rel="noopener">{{ j.title }}</a></td>
+                      <td>{{ j.company }}</td>
+                      <td><span class="tag {{ 'tag-accent' if j.status == 'filtered' else 'tag-neutral' }}">{{ j.status|capitalize }}</span></td>
+                      <td class="text-muted" style="font-size:11px;">{{ j.filter_reason }}</td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </details>
+            </td>
+          </tr>
+          {% endif %}
           {% endfor %}
         </tbody>
       </table>

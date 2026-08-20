@@ -1,12 +1,11 @@
 import re
-import time
 from functools import wraps
 
 from flask import Flask, redirect, render_template, request, session, url_for
 from markupsafe import Markup, escape
 from werkzeug.utils import secure_filename
 
-from src import agents, ai, files, filters, learning, scanner, store, tools
+from src import agents, ai, assistant, files, filters, learning, scanner, store, tailoring, tools, workflows
 from src import components as comp
 
 app = Flask(__name__)
@@ -26,7 +25,12 @@ def login_required(view):
 
 @app.context_processor
 def inject_user():
-    return {"user": store.DEMO_USER}
+    # assistant_models: static list, cheap to inject everywhere - the widget's own chat
+    # history/current model/active job are NOT injected here (that would couple every page
+    # render to a growing per-feature DB read); they're fetched by chat_widget.js via
+    # GET /assistant/history on first open instead, matching the app's existing small
+    # side-channel-fetch precedent (POST /messages/<id>/rate).
+    return {"user": store.DEMO_USER, "assistant_models": agents.MODEL_OPTIONS}
 
 
 def fmt_last_scan():
@@ -406,13 +410,6 @@ TAB_LABELS = {"cover_letter": "Cover Letter", "resume": "Resume", "qa": "Q&A"}
 _CITATION_RE = re.compile(r"\[Source (\d+(?:\s*,\s*\d+)*)\]")
 
 
-def _qa_context_text(session_id):
-    items = store.get_qa_list(session_id)
-    if not items:
-        return ""
-    return "\n\n".join(f"Q: {i['question_text']}\nA: {i['content']}" for i in items)
-
-
 def _render_chat_content(content, citations):
     """Convert "[Source N]" markers into clickable buttons carrying that citation's chunk
     text/score/filename as data attributes (see tailor.html showCitation()). Also handles a
@@ -521,87 +518,6 @@ def remove_chat_session(job_id, tab, session_id):
     return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
 
-def _run_pane_turn(chat_session, job, display_message, preferences):
-    """Run one full turn (classify -> retrieve -> generate -> persist) for one pane's own
-    thread. Returns None on success or an error message string on failure, for the caller to
-    show inline in that pane rather than crashing the whole request.
-    """
-    session_id, model, tab = chat_session["id"], chat_session["model"], chat_session["type"]
-    try:
-        history = agents.trim_history(store.get_chat(session_id))
-
-        # Saved now, before any of the LLM calls below that could fail - so the user's message
-        # is never lost from this pane's thread if something downstream breaks. history was
-        # already fetched above, so this doesn't duplicate into what gets sent to the model.
-        user_message_id = store.add_chat_message(session_id, job["id"], tab, "user", display_message, model)
-
-        current_text = _qa_context_text(session_id) if tab == "qa" else store.get_artifact_text(session_id)
-
-        # One free-tier classification call covers both "does this need fresh retrieval" and
-        # "could this reveal a durable preference" - see agents.classify_turn.
-        classification = agents.classify_turn(tab, display_message, bool(current_text))
-        check_preferences = bool(current_text) and classification["reveals_preference"]
-
-        if classification["needs_retrieval"]:
-            retrieval_query = agents.build_retrieval_query(job, display_message)
-            retrieved_chunks = store.retrieve_context(job["id"], retrieval_query, top_k=3)
-            retrieved_context = agents.format_retrieved_context(retrieved_chunks)
-        else:
-            retrieved_chunks = []
-            retrieved_context = "(not re-searched this turn - existing content covers this; rely on what's already here.)"
-
-        turn_started = time.monotonic()
-        result, used_model, usage = agents.run_tailor_turn(
-            tab, job, store.profile, preferences, history, current_text, display_message, model, retrieved_context
-        )
-        response_time_seconds = time.monotonic() - turn_started
-
-        # The resulting document as of this turn - the actual cover letter/résumé/Q&A answer,
-        # not the conversational reply. Computed before add_chat_message so it can be stored
-        # alongside it (chat_messages.artifact_text) and reused for revise_preferences below.
-        artifact_text = result.get("answer", "") if tab == "qa" else (result.get("artifact") or current_text)
-
-        assistant_message_id = store.add_chat_message(
-            session_id, job["id"], tab, "assistant", result.get("reply", ""), used_model,
-            response_time_seconds=response_time_seconds,
-            input_tokens=usage.get("prompt_tokens"),
-            output_tokens=usage.get("completion_tokens"),
-            artifact_text=artifact_text,
-        )
-        store.save_citations(assistant_message_id, retrieved_chunks)
-
-        if tab == "qa":
-            qa_list = store.get_qa_list(session_id)
-            if result.get("action") == "new_question" and result.get("question"):
-                store.add_qa(session_id, job["id"], result["question"], result.get("answer", ""))
-            elif qa_list:
-                store.update_qa(qa_list[-1]["id"], result.get("answer", ""))
-        elif result.get("artifact"):
-            store.save_artifact(session_id, job["id"], tab, result["artifact"])
-
-        # Preferences stay global/shared across every pane on purpose - feedback given to one
-        # model should improve every model's output, not just that pane's.
-        if check_preferences:
-            try:
-                revision = agents.revise_preferences(tab, display_message, artifact_text, preferences, model)
-                if revision:
-                    store.save_preference(revision["category"], revision["text"])
-            except RuntimeError:
-                # This is a secondary, best-effort step - the message/artifact above already
-                # generated and saved successfully, so a broken model reply here shouldn't
-                # discard that and report the whole turn as failed.
-                pass
-        # classify_turn (above) always ran for this message regardless of check_preferences,
-        # so it's fully considered either way - mark it so a /tools/preference_learning bulk
-        # run never re-spends a call on it. Only reached once the turn's succeeded end to end;
-        # a message from a turn that raised before here is left unmarked, for the bulk run to
-        # pick up later (see src/learning.py).
-        store.mark_message_preference_checked(user_message_id)
-        return None
-    except RuntimeError as e:
-        return str(e)
-
-
 @app.route("/jobs/<int:job_id>/tailor/<tab>/session/<int:session_id>/message", methods=["POST"])
 @login_required
 def session_message(job_id, tab, session_id):
@@ -650,10 +566,10 @@ def session_message(job_id, tab, session_id):
             session["tailor_errors"] = {**session.get("tailor_errors", {}), str(session_id): str(e)}
             return redirect(url_for("tailor", job_id=job_id, tab=tab))
 
-    # Preferences stay global/shared across every pane on purpose (see _run_pane_turn) - read
-    # fresh here regardless, in case another pane's turn just updated them.
+    # Preferences stay global/shared across every pane on purpose (see tailoring.run_turn) -
+    # read fresh here regardless, in case another pane's turn just updated them.
     preferences = store.get_preferences()
-    error = _run_pane_turn(chat_session, job, display_message, preferences)
+    _assistant_message_id, error = tailoring.run_turn(chat_session, job, display_message, preferences)
     if error:
         session["tailor_errors"] = {**session.get("tailor_errors", {}), str(session_id): error}
 
@@ -670,6 +586,36 @@ def rate_message(message_id):
         store.rate_chat_message(message_id, rating)
     except ValueError as e:
         return {"error": str(e)}, 404
+    return {"ok": True}
+
+
+# ---- floating assistant -----------------------------------------------------
+# JSON endpoints, not redirects - the widget persists across every page, so a turn can't
+# safely reload whatever page is behind it (see src/assistant.py).
+
+@app.route("/assistant/message", methods=["POST"])
+@login_required
+def assistant_message():
+    message = (request.get_json(silent=True) or {}).get("message", "").strip()
+    if not message:
+        return {"error": "message is required"}, 400
+    model = store.get_assistant_model(agents.DEFAULT_MODEL)
+    return assistant.handle_turn(message, model)
+
+
+@app.route("/assistant/history")
+@login_required
+def assistant_history():
+    return assistant.get_history_payload()
+
+
+@app.route("/assistant/model", methods=["POST"])
+@login_required
+def assistant_model_set():
+    model = (request.get_json(silent=True) or {}).get("model")
+    if model not in agents.MODEL_OPTIONS:
+        return {"error": "unknown model"}, 400
+    store.set_assistant_model(model)
     return {"ok": True}
 
 
@@ -737,6 +683,16 @@ def usage():
 @login_required
 def system_components():
     return render_template("components.html")
+
+
+# ---- workflows (planned multi-step flows, UI only - see src/workflows.py) ---
+
+@app.route("/workflows")
+@login_required
+def workflows_page():
+    return render_template(
+        "workflows.html", workflows=workflows.WORKFLOWS, components=comp.COMPONENTS, tools=tools.TOOLS,
+    )
 
 
 # ---- sourcing components (SerpAPI, RemoteOK, ATS boards - see src/components/) --------
@@ -824,6 +780,9 @@ def component_detail(component_id):
     if component_id == "ats":
         config = _ats_config_with_followed_companies(config)
 
+    # Every listing this run fetched, kept or filtered alike - this page is fetch-only and
+    # filter-agnostic (see src/components/README.md); filtering itself only happens from
+    # the Filter & dedupe tool (/tools/filter_dedupe), never from here.
     run_id = request.args.get("run", type=int)
     run = store.get_run(run_id) if run_id else store.get_latest_run(component_id)
     results = store.get_run_results(run["id"]) if run else []
@@ -964,6 +923,10 @@ def tool_detail(tool_id):
         # "fetched") -> staged results awaiting "Add to dashboard" -> the saved-jobs log.
         active_filters = filters.describe_active_filters(store.profile)
         all_runs = store.get_all_component_runs()
+        # Per-job verdict (kept vs filtered + reason) for any run already filtered - the
+        # aggregate filtered_count/filtered_reasons on the row itself only give totals.
+        for r in all_runs:
+            r["job_results"] = store.get_run_results(r["id"]) if r["status"] not in ("fetched", "running") else []
         runs_by_mode = {mode: [r for r in all_runs if r["mode"] == mode] for mode in ("test", "live")}
         staged_results = store.get_staged_results_for_review()
 

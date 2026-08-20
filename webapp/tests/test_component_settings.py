@@ -13,9 +13,9 @@ from src import components as comp
 SERPAPI_QUERY_FORM = {
     "query_label": "Primary", "query_terms": "Made Up Title", "query_match": "OR",
     "query_location": "Canada", "query_date_posted": "week", "query_employment_types": "",
-    "query_remote_only": "",
+    "query_work_mode": "any",
     "use_followed_companies": "", "followed_location": "", "followed_date_posted": "month",
-    "followed_employment_types": "", "followed_remote_only": "",
+    "followed_employment_types": "", "followed_work_mode": "any",
 }
 
 

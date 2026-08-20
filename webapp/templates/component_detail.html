@@ -50,7 +50,7 @@
         {% endfor %}
       </div>
       <template id="query-row-template">
-        {% set q = {"label": "", "terms": [], "match": "OR", "location": "", "date_posted": "week", "employment_types": [], "remote_only": False} %}
+        {% set q = {"label": "", "terms": [], "match": "OR", "location": "", "date_posted": "week", "employment_types": [], "work_mode": "any"} %}
         {% include "_serpapi_query_row.html" %}
       </template>
       <button type="button" class="btn btn-secondary btn-small" style="margin-top:8px;" onclick="addQueryRow()">+ Add query</button>
@@ -161,21 +161,8 @@
   {% if run %}
   <div class="run-summary text-muted">
     Run #{{ run.id }} &middot; {{ run.mode|capitalize }} mode &middot; {{ run.status|capitalize }}
-    &middot; {{ run.fetched_count }} found &middot; {{ run.filtered_count }} filtered out
-    &middot; {{ results|length }} staged for review &middot; started {{ run.started_at }}
-    {% if run.filtered_reasons %}
-    <br><span style="font-size:11px;">Filtered:
-      {% for reason, count in run.filtered_reasons.items() %}{{ reason }} ({{ count }}){% if not loop.last %}, {% endif %}{% endfor %}
-    </span>
-    {% endif %}
+    &middot; {{ run.fetched_count }} found &middot; started {{ run.started_at }}
     {% if run.error_message %}<br><span class="error">{{ run.error_message }}</span>{% endif %}
-    {% if run.status == 'fetched' %}
-    <br>
-    <form method="post" action="{{ url_for('component_run_filter', component_id=component_id, run_id=run.id) }}" style="display:inline;">
-      <button type="submit" class="btn btn-secondary btn-small">Filter &amp; dedupe now</button>
-    </form>
-    <span style="font-size:11px;">fetched, not yet filtered</span>
-    {% endif %}
   </div>
   {% endif %}
 
@@ -203,9 +190,7 @@
         {% endfor %}
       </tbody>
     </table>
-    {% if run and not results and run.status == 'fetched' %}
-    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">{{ run.fetched_count }} fetched, not yet filtered - click "Filter &amp; dedupe now" above to review them.</div>
-    {% elif run and not results %}
+    {% if run and not results %}
     <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">No results{% if run.status == 'error' %} - see error above{% endif %}.</div>
     {% elif not run %}
     <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">No runs yet. Test mode uses fixture data, no real call is made.</div>

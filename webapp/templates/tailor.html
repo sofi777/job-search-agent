@@ -4,32 +4,11 @@
 {% include "_nav.html" %}
 
 <style>
-  .msg-row { display: flex; }
-  .msg-row.user { justify-content: flex-end; }
-  .msg-bubble { max-width: 88%; white-space: pre-line; line-height: 1.5; font-size: 13px; }
-  .msg-row.user .msg-bubble { background: var(--color-accent-100); color: var(--color-accent-800); padding: 8px 12px; border-radius: 14px 14px 4px 14px; }
-  .msg-row.assistant .msg-bubble { max-width: 100%; padding: 0; }
-  .chat-inputbar { display: flex; align-items: flex-end; gap: 8px; border: 1px solid var(--color-divider); border-radius: 22px; padding: 8px 8px 8px 16px; background: #fff; }
-  .chat-inputbar textarea { flex: 1; border: none; background: transparent; resize: none; min-height: 24px; max-height: 120px; font: inherit; font-size: 13px; padding: 6px 0; outline: none; }
+  /* .msg-row/.msg-bubble/.chat-inputbar/.send-btn/.typing-dot/.citation/.msg-sources/
+     .msg-rating/.rate-btn now live in style.css - shared with the floating assistant widget. */
   .attach-btn { cursor: pointer; font-size: 16px; color: var(--color-neutral-700); padding: 6px; line-height: 1; }
   .attach-chip { display: none; align-items: center; gap: 6px; background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: 14px; padding: 4px 6px 4px 10px; font-size: 11px; margin-bottom: 6px; align-self: flex-start; }
   .attach-chip button { all: unset; cursor: pointer; color: var(--color-neutral-700); padding: 0 4px; }
-  .send-btn { background: var(--color-accent); color: #fff; border: none; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; font-size: 14px; }
-  .send-btn:hover { background: var(--color-accent-600); }
-  .send-btn:disabled { opacity: 0.5; cursor: not-allowed; background: var(--color-accent); }
-  .typing-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--color-neutral-600); margin-right: 4px; animation: typing-bounce 1.2s infinite ease-in-out; }
-  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
-  .typing-dot:nth-child(3) { animation-delay: 0.4s; margin-right: 0; }
-  @keyframes typing-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.4; } 30% { transform: translateY(-4px); opacity: 1; } }
-  .citation { all: unset; cursor: pointer; color: var(--color-accent); font-weight: 600; font-size: 12px; padding: 0 2px; }
-  .citation:hover { text-decoration: underline; }
-  .msg-sources { margin-top: 6px; font-size: 11px; }
-  .msg-sources .citation { font-size: 11px; font-weight: 500; }
-  .msg-rating { display: flex; gap: 2px; margin-top: 4px; }
-  .rate-btn { all: unset; cursor: pointer; font-size: 13px; padding: 3px 7px; border-radius: 6px; opacity: 0.5; }
-  .rate-btn:hover:not(:disabled) { background: var(--color-neutral-100); opacity: 1; }
-  .rate-btn:disabled { cursor: default; }
-  .rate-btn.selected { opacity: 1; background: var(--color-accent-100); }
   #citation-dialog { max-width: 480px; }
   #citation-dialog .kicker { margin-bottom: var(--space-2); }
   #citation-dialog pre { white-space: pre-wrap; font: inherit; margin: 0; line-height: 1.5; }

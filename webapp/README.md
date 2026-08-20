@@ -60,6 +60,10 @@ webapp/
     learning.py          # run_learning(scope, mode, model): on-demand replay of
                          #   unchecked tailoring-chat feedback through the same
                          #   preference-learning check the live chat makes per turn
+    tailoring.py          # run_turn(): one tailoring-chat turn, shared by the per-job
+                         #   Tailor page and the floating assistant's cover-letter drafting
+    assistant.py          # floating assistant orchestrator: routes each chat turn to a
+                         #   live workflow, cover-letter drafting, or plain chat
   scripts/
     test_agents.py       # quick manual check: calls agents.send_message and prints
   data/
@@ -67,15 +71,18 @@ webapp/
                          #   run. Edit this file, then click "Reload sample data"
                          #   in the dashboard to upsert your changes
     app.db               # SQLite database: user profile, all jobs (sample +
-                         #   user-added), and per-job progress (status, comments,
-                         #   generated docs). Created automatically on first run;
-                         #   gitignored
+                         #   user-added), per-job progress (status, comments,
+                         #   generated docs), and the floating assistant's single
+                         #   global chat thread (assistant_messages). Created
+                         #   automatically on first run; gitignored
     chroma/               # Chroma vector store for RAG chunk embeddings, gitignored;
                          #   rebuilds from app.db's documents table via the /chunks page
     uploads/             # uploaded resume files (gitignored)
-  templates/            # Jinja2 HTML templates
+  templates/            # Jinja2 HTML templates; base.html includes chat_widget.html
+                         #   (the floating assistant) on every logged-in page
   static/style.css       # design tokens + component styles, ported from the Claude
                          #   design prototype in ../Prototype/
+  static/chat_widget.js  # floating assistant's JS - fetch()+JSON turns, no page reload
 ```
 
 ## Implemented features
@@ -161,20 +168,25 @@ webapp/
   SerpAPI (Google Jobs), RemoteOK, and ATS boards (Lever/Greenhouse/Ashby/Workable)
   each get their own page to configure search criteria (seeded from your profile,
   freely editable/extendable there), run in test mode (fixture data, no real call)
-  or live mode, and review results with an "Add to dashboard" button per listing.
-  Each component is independent - a run never writes to the jobs table on its own,
-  and no component calls another; a future workflow can wire them together without
+  or live mode, and immediately show every listing the run returned, unfiltered,
+  each with its own "Add to dashboard" button. Each component is independent - a run
+  never applies filtering/dedup and never writes to the jobs table on its own, and no
+  component calls another; a future workflow can wire them together without
   changing this code. A shared "followed companies" list lives on your profile
   (`store.followed_companies`) and can be extended directly from the SerpAPI/ATS
   settings pages. See `src/components/README.md` for what each needs (SerpAPI
   needs a free API key; RemoteOK and ATS boards need nothing).
-- **Filter & dedupe** (`src/filters.py`): before a run's listings are staged for
-  review, they're gated against your profile's hard preferences - role/title, location,
-  remoteness, work eligibility, salary floor - and deduped (within the batch, against
-  the jobs table, and against anything already staged from an earlier run). There's no
-  separate settings screen for this: it reads your profile live, so editing it on
-  `/profile` is how you change what gets filtered. The run summary and run history on
-  each component's page show how many were filtered and why. Soft preferences
+- **Filter & dedupe** (`src/filters.py`, `/tools/filter_dedupe` - never a component's
+  own page, which stays filter-agnostic): run explicitly per fetch against a run's
+  already-staged listings, gating them against your profile's hard preferences -
+  role/title, location, remoteness, work eligibility, salary floor - and deduping
+  (within the batch, against the jobs table, and against anything already kept from
+  an earlier run). There's no separate settings screen for this: it reads your profile
+  live, so editing it on `/profile` is how you change what gets filtered. Nothing is
+  removed - a filtered-out listing just flips to status "filtered" with a reason, still
+  visible (and still addable) on its component's own page; running the tool page's Run
+  log shows an expandable per-job "Kept" vs. "Filtered out + reason" breakdown per run,
+  not just the aggregate count. Soft preferences
   (resume/story-bank skill fit, industries, free text) aren't applied here - that's the
   Score fit tool (`src/scanner.py`'s `run_scan()`), a separate step that scores jobs
   already saved to the dashboard.
@@ -193,7 +205,8 @@ webapp/
   Tools section, `src/tools.py` registry): what that tool does, and for the live ones,
   its current live state. Filter, dedupe & save shows the hard-preference values it's
   reading right now plus a combined log of every source run's filter/dedup outcome
-  across all components, split into Test/Live tabs, staged results awaiting "Add to
+  across all components (with an expandable per-job kept/filtered breakdown once a run's
+  been filtered), split into Test/Live tabs, staged (kept) results awaiting "Add to
   dashboard", and the saved-jobs log. Score fit is described above. Tailored
   generation is a job picker that opens that job's existing `/jobs/<id>/tailor` page
   (no new generation logic - see Tailoring chat below). Preference learning has its
@@ -205,6 +218,38 @@ webapp/
   only ever looks at what's new. Below the run log, each category's current learned
   text and when it last changed is still shown read-only, with a link to `/preferences`
   to edit directly. The two pending tools just explain what's blocking them.
+- **Workflows** (`/workflows`, linked from the Admin menu): dashboard of multi-step
+  flows chaining the above components/tools, one card per `src/workflows.py` entry with
+  a chip per component/tool it will use (linking to that component's/tool's own page).
+  - Job search and rerank: SerpAPI + RemoteOK + ATS boards -> Filter, dedupe & save ->
+    Score fit -> dashboard. Has a real runner (`workflows.run_job_search_rerank`) and
+    can be triggered from the floating assistant chat (see below); this page itself
+    still has no manual "Run now" button.
+  - Tailor cover letter for top 3 jobs: not implemented yet - display only, no runner.
+- **Floating assistant** (bottom-right bubble, every logged-in page - `src/assistant.py`,
+  `templates/chat_widget.html`): one continuous chat, not scoped to any single job or
+  page, grounded in your full profile/preferences/dashboard (cross-session memory - it
+  persists forever, same DB as everything else). Understands three kinds of requests:
+  - **Trigger a live workflow** in plain language ("run job search and rerank") - runs
+    the same chain as above and replies with an exact, non-hallucinated summary (jobs
+    added per source, rescored count, any per-source errors) composed in Python from the
+    real result, not restated by the model.
+  - **Draft or revise a cover letter** for a job ("draft a cover letter for the Notion
+    role", or just "make it shorter" once one's already the topic) - runs through the
+    exact same turn logic as the per-job Tailor page (`src/tailoring.run_turn`, see
+    Tailoring chat above), so the draft, the learned-preference feedback loop, and the
+    thumbs up/down rating are all the *same* record shown on that job's own `/jobs/<id>/
+    tailor` page - the chat is just an additional front door onto it, not a separate
+    copy. Preview and give feedback right in the chat; no need to navigate away.
+  - **Answer questions or just talk** using your profile/preferences/dashboard as
+    context, when the message isn't asking for either of the above.
+
+  Tracks which job is under discussion across turns without you repeating it (falls
+  back to whichever job the last relevant turn was about; asks for clarification rather
+  than guessing if a name matches more than one job, or none). A model dropdown at the
+  bottom of the panel switches models mid-conversation without losing the thread or
+  forking a new chat - unlike the Tailor page's compare panes, which are deliberately
+  one independent thread per model.
 
 ## What's a placeholder (by design)
 

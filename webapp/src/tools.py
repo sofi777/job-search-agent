@@ -25,7 +25,9 @@ TOOLS = {
     },
     "extract_structure": {
         "name": "Extract & structure",
-        "description": "Fetch a raw listing and parse it into job fields.",
+        "description": "Parses a raw-text listing (e.g. a Gmail alert email) into job "
+                        "fields, including description - for sources that don't already "
+                        "return structured data.",
         "status": "pending",
         "blocked_reason": "No raw-text source feeds this yet - SerpAPI/RemoteOK/ATS "
                            "already return structured listings. Needed once Gmail (or "

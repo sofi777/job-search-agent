@@ -19,7 +19,7 @@ EMPLOYMENT_TYPE_OPTIONS = [
     ("CONTRACTOR", "Contract"), ("INTERN", "Internship"),
 ]
 MATCH_OPTIONS = [("OR", "Any of these terms"), ("AND", "All of these terms")]
-REMOTE_ONLY_OPTIONS = [("", "Any location"), ("1", "Remote only")]
+WORK_MODE_OPTIONS = [("any", "Any location"), ("local", "Local only"), ("remote", "Remote only")]
 
 DATE_POSTED_CHIPS = {opt: f"date_posted:{opt}" for opt, _ in DATE_POSTED_OPTIONS if opt != "any"}
 
@@ -48,16 +48,18 @@ FAKE_RESULTS = [
 
 def default_config(profile):
     role_terms = profile.get("roles") or ["Senior Product Manager"]
-    location = (profile.get("eligible_countries") or ["United States"])[0]
+    # Where the user actually is, not a work-eligibility country - so the seeded search
+    # starts local instead of defaulting to a whole (often wrong) country.
+    location = profile.get("home_address") or (profile.get("eligible_countries") or ["United States"])[0]
     return {
         "queries": [{
             "label": "Primary roles", "terms": role_terms, "match": "OR",
             "location": location, "date_posted": "week",
-            "employment_types": [], "remote_only": False,
+            "employment_types": [], "work_mode": "local",
         }],
         "use_followed_companies": True,
         "followed_companies_filters": {
-            "location": "", "date_posted": "month", "employment_types": [], "remote_only": False,
+            "location": "", "date_posted": "month", "employment_types": [], "work_mode": "any",
         },
     }
 
@@ -83,26 +85,41 @@ def _to_listing(job, label):
     )
 
 
+def _work_mode(q):
+    """"any" / "local" / "remote", defaulting to "any". Also reads the old boolean
+    "remote_only" field so configs saved before work_mode existed still behave."""
+    mode = q.get("work_mode")
+    if mode in ("any", "local", "remote"):
+        return mode
+    return "remote" if q.get("remote_only") else "any"
+
+
 def _fetch_query(q, api_key):
     """q: {"label", "terms", "match", "location", "date_posted", "employment_types",
-    "remote_only"} - see default_config()."""
+    "work_mode"} - see default_config(). work_mode "remote" asks SerpAPI to only return
+    remote jobs; "local" asks normally (scoped by location) then drops anything flagged
+    remote, since SerpAPI itself has no onsite-only filter."""
     joiner = f' {q.get("match", "OR")} '
     query_str = joiner.join(f'"{t}"' for t in q.get("terms", []))
 
     chips = [DATE_POSTED_CHIPS[q["date_posted"]]] if q.get("date_posted") in DATE_POSTED_CHIPS else []
     chips += [f"employment_type:{et}" for et in q.get("employment_types", [])]
 
+    work_mode = _work_mode(q)
     params = {"engine": "google_jobs", "q": query_str, "hl": "en", "api_key": api_key}
     if chips:
         params["chips"] = ",".join(chips)
     if q.get("location"):
         params["location"] = q["location"]
-    if q.get("remote_only"):
+    if work_mode == "remote":
         params["ltype"] = "1"
 
     url = SERPAPI_URL + "?" + urllib.parse.urlencode(params)
     data = base.fetch_json(url)
-    return [_to_listing(job, q.get("label", "Search")) for job in data.get("jobs_results", [])]
+    listings = [_to_listing(job, q.get("label", "Search")) for job in data.get("jobs_results", [])]
+    if work_mode == "local":
+        listings = [l for l in listings if not l["remote"]]
+    return listings
 
 
 def run(config, test_mode):

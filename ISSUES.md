@@ -41,3 +41,12 @@ Tracked here so they don't get lost. Check off and remove once fixed.
   catalog could make "Run scan"/the Score fit tool's "Run" take a long time or time out
   the browser request. Fine at demo scale; would need batching/background execution to
   scale up.
+- [ ] **Floating assistant has no confirmation step or rate limit on actions.**
+  `src/assistant.py`'s router can fire `workflows.run_job_search_rerank` (spends
+  OpenRouter + SerpAPI credits, mutates the dashboard) or draft/revise a cover letter
+  from a single freeform chat message, with no "are you sure" and nothing stopping a
+  message (or a script hitting `POST /assistant/message` directly) from triggering it
+  repeatedly. Not a blocker for single-user localhost use - matches how the existing
+  `/scan` button and tailoring chat already work, no confirmation pattern exists
+  anywhere else in the app either - but worth adding before any public deploy, same as
+  the fake-login/hardcoded-secret entries above.

@@ -1,5 +1,5 @@
 """src/learning.py - run_learning() replays unchecked tailoring-chat feedback through the
-same reveals-a-preference judgment the live per-turn hook makes (app.py's _run_pane_turn).
+same reveals-a-preference judgment the live per-turn hook makes (src/tailoring.run_turn).
 classify_turn/revise_preferences (real LLM calls) are mocked; everything else is real
 store/db so the gating (preceding/following artifact_text), incremental marking, and
 scope filtering are exercised for real.

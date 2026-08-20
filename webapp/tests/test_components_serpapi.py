@@ -8,9 +8,19 @@ from src.components import serpapi
 
 
 class DefaultConfigTests(unittest.TestCase):
-    def test_seeds_terms_and_location_from_profile(self):
-        config = serpapi.default_config({"roles": ["Senior PM"], "eligible_countries": ["Canada"]})
+    def test_seeds_location_from_home_address_not_eligible_countries(self):
+        config = serpapi.default_config({
+            "roles": ["Senior PM"], "home_address": "Austin, TX", "eligible_countries": ["Canada"],
+        })
         self.assertEqual(config["queries"][0]["terms"], ["Senior PM"])
+        self.assertEqual(config["queries"][0]["location"], "Austin, TX")
+
+    def test_defaults_to_local_only_work_mode(self):
+        config = serpapi.default_config({"home_address": "Austin, TX"})
+        self.assertEqual(config["queries"][0]["work_mode"], "local")
+
+    def test_falls_back_to_eligible_countries_without_home_address(self):
+        config = serpapi.default_config({"eligible_countries": ["Canada"]})
         self.assertEqual(config["queries"][0]["location"], "Canada")
 
     def test_falls_back_without_profile_data(self):
@@ -21,6 +31,23 @@ class DefaultConfigTests(unittest.TestCase):
     def test_includes_followed_companies_filters(self):
         config = serpapi.default_config({})
         self.assertEqual(config["followed_companies_filters"]["date_posted"], "month")
+        self.assertEqual(config["followed_companies_filters"]["work_mode"], "any")
+
+
+class WorkModeTests(unittest.TestCase):
+    def test_reads_work_mode_field(self):
+        self.assertEqual(serpapi._work_mode({"work_mode": "remote"}), "remote")
+        self.assertEqual(serpapi._work_mode({"work_mode": "local"}), "local")
+
+    def test_unknown_work_mode_falls_back_to_any(self):
+        self.assertEqual(serpapi._work_mode({"work_mode": "bogus"}), "any")
+
+    def test_missing_work_mode_falls_back_to_any(self):
+        self.assertEqual(serpapi._work_mode({}), "any")
+
+    def test_legacy_remote_only_bool_still_honored(self):
+        self.assertEqual(serpapi._work_mode({"remote_only": True}), "remote")
+        self.assertEqual(serpapi._work_mode({"remote_only": False}), "any")
 
 
 class BestUrlTests(unittest.TestCase):
@@ -58,7 +85,7 @@ class ToListingTests(unittest.TestCase):
 class FetchQueryParamsTests(unittest.TestCase):
     def test_terms_joined_by_match_and_chips_built_from_date_and_employment_type(self):
         q = {"label": "PM", "terms": ["PM", "Product Lead"], "match": "AND", "location": "Canada",
-             "date_posted": "week", "employment_types": ["FULLTIME", "CONTRACTOR"], "remote_only": True}
+             "date_posted": "week", "employment_types": ["FULLTIME", "CONTRACTOR"], "work_mode": "remote"}
         with patch("src.components.serpapi.base.fetch_json", return_value={"jobs_results": []}) as mock_fetch:
             serpapi._fetch_query(q, "fake-key")
         url = mock_fetch.call_args[0][0]
@@ -83,6 +110,30 @@ class FetchQueryParamsTests(unittest.TestCase):
         self.assertNotIn("chips=", url)
         self.assertNotIn("ltype", url)
 
+    def test_local_only_omits_ltype_but_drops_remote_flagged_results(self):
+        q = {"terms": ["PM"], "match": "OR", "date_posted": "any", "employment_types": [],
+             "location": "Austin, TX", "work_mode": "local"}
+        jobs = {"jobs_results": [
+            {"title": "Onsite PM", "company_name": "Acme", "location": "Austin, TX"},
+            {"title": "Remote PM", "company_name": "Acme", "location": "Remote"},
+        ]}
+        with patch("src.components.serpapi.base.fetch_json", return_value=jobs) as mock_fetch:
+            listings = serpapi._fetch_query(q, "fake-key")
+        url = mock_fetch.call_args[0][0]
+        self.assertNotIn("ltype", url)
+        self.assertEqual(len(listings), 1)
+        self.assertEqual(listings[0]["title"], "Onsite PM")
+
+    def test_any_work_mode_keeps_both_remote_and_onsite_results(self):
+        q = {"terms": ["PM"], "match": "OR", "date_posted": "any", "employment_types": [], "work_mode": "any"}
+        jobs = {"jobs_results": [
+            {"title": "Onsite PM", "company_name": "Acme", "location": "Austin, TX"},
+            {"title": "Remote PM", "company_name": "Acme", "location": "Remote"},
+        ]}
+        with patch("src.components.serpapi.base.fetch_json", return_value=jobs):
+            listings = serpapi._fetch_query(q, "fake-key")
+        self.assertEqual(len(listings), 2)
+
 
 class RunTests(unittest.TestCase):
     def test_test_mode_returns_fixture_without_network_call(self):
@@ -102,11 +153,11 @@ class RunTests(unittest.TestCase):
     def test_live_mode_runs_each_query_plus_followed_companies_batch_with_its_own_filters(self):
         config = {
             "queries": [{"label": "Primary", "terms": ["PM"], "match": "OR", "location": "Canada",
-                         "date_posted": "week", "employment_types": [], "remote_only": False}],
+                         "date_posted": "week", "employment_types": [], "work_mode": "any"}],
             "use_followed_companies": True,
             "followed_companies": ["Acme"],
             "followed_companies_filters": {"location": "Germany", "date_posted": "today",
-                                            "employment_types": ["INTERN"], "remote_only": True},
+                                            "employment_types": ["INTERN"], "work_mode": "remote"},
         }
         job = {"title": "PM", "company_name": "Acme", "location": "Remote", "share_link": "https://x/1"}
         with patch("src.components.serpapi.base.fetch_json", return_value={"jobs_results": [job]}) as mock_fetch:

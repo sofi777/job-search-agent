@@ -1,0 +1,26 @@
+<button type="button" class="assistant-bubble" data-assistant-toggle title="Assistant">&#128172;</button>
+
+<div class="assistant-panel" data-assistant-panel hidden>
+  <div class="assistant-panel-header">
+    <span class="brand" style="font-size:14px;">Assistant</span>
+    <button type="button" class="assistant-panel-close" data-assistant-close title="Close">&times;</button>
+  </div>
+
+  <div class="assistant-chat" data-assistant-messages>
+    <div class="text-muted" data-assistant-empty>Ask me to search for jobs and rerank your dashboard, draft a cover letter, or anything about your profile.</div>
+  </div>
+
+  <div class="assistant-panel-footer">
+    <div class="chat-inputbar">
+      <textarea data-assistant-input rows="1" placeholder="Message the assistant…"></textarea>
+      <button type="button" class="send-btn" data-assistant-send title="Send">&uarr;</button>
+    </div>
+    <select class="input assistant-model-select" data-assistant-model>
+      {% for m in assistant_models %}
+      <option value="{{ m }}">{{ m }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='chat_widget.js') }}"></script>

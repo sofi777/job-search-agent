@@ -32,10 +32,38 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   and `extract_job_posting()` are real LLM calls via `src/agents.py`.
 - **`src/agents.py`** - the one module that talks to an LLM (OpenRouter transport:
   `send_message`/`send_chat`), plus the tailoring chat + cross-job preference
-  learning (`run_tailor_turn`, `revise_preferences`). Every real LLM call in the app
-  goes through `send_chat` - see CLAUDE.md's LLM usage tracking rule.
+  learning (`run_tailor_turn`, `revise_preferences`) and the floating assistant's own
+  turn logic (`answer_assistant_message` - plain chat, grounded in profile/preferences/
+  a compact jobs summary; `route_assistant_turn` - classifies one assistant turn into a
+  live workflow id, `"cover_letter"`, or `"chat"`, same JSON-in/JSON-out shape as
+  `classify_turn`, defaults to `"chat"` on any failure since misrouting into a paid
+  workflow/unwanted draft is the unsafe direction). Every real LLM call in the app goes
+  through `send_chat` - see CLAUDE.md's LLM usage tracking rule.
+- **`src/tailoring.py`** - `run_turn(chat_session, job, display_message, preferences)`:
+  one full tailoring-chat turn (classify -> retrieve -> generate -> persist -> learn).
+  Extracted from `app.py`'s `_run_pane_turn` so it's shared verbatim by the per-job
+  Tailor pane route and `src/assistant.py`'s chat-driven cover-letter drafting - one
+  code path, so feedback given from either surface behaves identically.
+- **`src/assistant.py`** - the floating assistant's orchestrator: one continuous global
+  thread (not scoped to a job or a "pane", see `assistant_messages` below).
+  `handle_turn(message, model)` calls `agents.route_assistant_turn` then dispatches to a
+  live workflow (`workflows.WORKFLOWS[action]["run"]`, reply composed deterministically
+  in Python from the summary, no second LLM call), `"cover_letter"` (`resolve_job` +
+  `get_or_create_cover_letter_session` + `tailoring.run_turn`, mirrored into this thread
+  with `linked_chat_message_id` pointing at the real `chat_messages` row so the widget's
+  rating buttons hit the existing `/messages/<id>/rate` route), or plain chat
+  (`agents.answer_assistant_message`). `resolve_job(job_query, jobs)` is a deterministic
+  (no LLM) match against `store.jobs` - rank phrases ("top job", "#2") or a title/company
+  substring match; ambiguous/no match returns candidates instead of guessing. Job
+  continuity: if a turn doesn't name a job, falls back to `store.get_active_job_id()`
+  (the most recent job any prior turn discussed, skipping job-agnostic turns like a
+  workflow run). `get_or_create_cover_letter_session` retargets an existing session's
+  model in place (`store.set_session_model`, not the fork-aware
+  `store.switch_session_model` built for Tailor-page compare panes) so switching models
+  in the widget never forks/resets the conversation.
 - **`src/prompts/`** - tailoring chat prompt templates, one `.txt` file per artifact
-  type, plus the preference-revision prompt.
+  type, the preference-revision prompt, and the assistant's own (`assistant_chat.txt`,
+  `route_assistant_turn.txt`).
 - **`src/files.py`** - `extract_text()`: .pdf/.docx/.txt/.md -> plain text.
 - **`src/rag.py`** - chunking + sentence-transformers embeddings + Chroma retrieval
   for the tailoring knowledge base.
@@ -93,11 +121,27 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   its `check_preferences` block - see `_run_pane_turn`). Run log: `preference_learning_runs`
   / `preference_learning_run_results` (`src/db.py`), same shape as `scoring_runs` /
   `scoring_run_results`.
+- **`src/workflows.py`** - `WORKFLOWS` registry (name/description/`uses`/`status`) for
+  the `/workflows` cards. `status: "live"` entries carry a `"run"` callable and are what
+  `src/assistant.py`'s router can trigger by name; `"pending"` entries are still
+  display-only. `run_job_search_rerank(mode)` (the `job_search_rerank` entry's runner):
+  for each `src/components/` entry, fetch -> `store.save_fetch_results` ->
+  `store.apply_run_filters` -> `store.add_run_result_to_dashboard` on every kept result,
+  then `scanner.run_scan(mode)`. Never raises - mirrors `scanner.run_scan`'s contract, a
+  failure in one component (or an already-on-the-dashboard race) is recorded/skipped, not
+  fatal to the others. `tailor_top_3` stays `"pending"` (no runner) - not yet built.
 - **`scripts/`** - quick manual scripts (`test_agents.py`, `show_last_call.py`).
-- **`templates/`** - Jinja2 HTML, all extending `base.html`. Pages with file uploads
-  (`onboarding_resume.html`, `profile.html`) mark their `<form>` `data-upload-form` and
-  each dropzone `data-field="..."` to opt into `static/upload.js`.
-- **`static/style.css`** - design tokens + component styles.
+- **`templates/`** - Jinja2 HTML, all extending `base.html`. `base.html` also includes
+  `chat_widget.html` on every logged-in page (the floating assistant bubble/panel - see
+  `src/assistant.py`), gated on `session.logged_in` so it's absent from `login.html`.
+  Pages with file uploads (`onboarding_resume.html`, `profile.html`) mark their `<form>`
+  `data-upload-form` and each dropzone `data-field="..."` to opt into `static/upload.js`.
+- **`static/style.css`** - design tokens + component styles. `.msg-row`/`.msg-bubble`/
+  `.chat-inputbar`/`.send-btn`/`.typing-dot`/`.citation`/`.msg-rating`/`.rate-btn` are
+  shared between the per-job Tailor panes (`tailor.html`) and the floating assistant
+  widget (`chat_widget.html`) - moved here from `tailor.html`'s own `<style>` once a
+  second feature needed them; `.assistant-*` classes are the widget's own (bubble,
+  fixed-position panel, artifact preview, model select).
 - **`static/upload.js`** - progressive enhancement for `data-upload-form` forms: hides the
   native file input behind a styled button, shows a checkmark once a file is
   staged/on-file, disables the submit button and shows per-file upload progress (via one
@@ -105,11 +149,26 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   frozen mid-submit, then either follows the server's redirect or swaps in its re-rendered
   HTML (e.g. on a warning) via `document.write`. No build step, no bundler - included with
   a plain `<script src>` in a template's `scripts` block.
+- **`static/chat_widget.js`** - the floating assistant's JS (vanilla, `data-*` hooks, same
+  convention as `upload.js`). Unlike every other chat surface in the app, turns are
+  `fetch()`+JSON against `/assistant/*` (no full-page POST/redirect) since the widget
+  persists across whatever page the user is on and can't safely reload it. Lazy-loads
+  `GET /assistant/history` on first open rather than being injected into every page
+  render. Optimistic user-message echo + typing-dot "thinking" bubble, same trick as
+  `tailor.html`'s inline script. Its rating-button listener is scoped to the widget panel
+  (not `document`-wide) so it never double-fires alongside `tailor.html`'s identical
+  listener when both are present on the same page.
 - **`data/`** - all app data, mostly gitignored (see `.gitignore` for what's sample
   vs. user data):
   - `app.db` - SQLite: user profile, jobs, per-job progress, chat_sessions (compare
     panes), chat, artifacts, preferences, documents, chunks, citations, settings,
-    scoring_runs/scoring_run_results (fit-scoring run log, see `src/scanner.py`).
+    scoring_runs/scoring_run_results (fit-scoring run log, see `src/scanner.py`),
+    assistant_messages (the floating assistant's single global thread - `job_id`
+    nullable, set per-message to whichever job that turn concerned;
+    `linked_chat_message_id` points at the real `chat_messages` row when a turn
+    drafted/revised a cover letter; current model persisted in `settings` under key
+    `"assistant_model"`, not its own column, since it's one durable value not per-message
+    state).
   - `jobs.json` - sample job catalog, seeds `app.db` on first run.
   - `chroma/` - vector store for RAG chunk embeddings.
   - `uploads/` - uploaded resume files.
@@ -128,6 +187,14 @@ pane only, `POST /jobs/<id>/tailor/<tab>/sessions` adds a pane, `POST
 resurfaced by re-adding the same model). Settings pages:
 `/profile`, `/preferences`, `/chunks`, `/results`,
 `/usage`. Rating a response: `POST /messages/<id>/rate`.
+
+The floating assistant (every logged-in page, see `src/assistant.py`/
+`templates/chat_widget.html`): `POST /assistant/message` (JSON, one turn - `{message}`
+-> `{user_message, assistant_message}`), `GET /assistant/history` (`{messages, model}`,
+fetched by the widget's JS on first open), `POST /assistant/model` (`{model}`, validated
+against `agents.MODEL_OPTIONS`, persisted to `settings`). All JSON, not redirects -
+unlike every other chat surface in the app, this one can't safely reload whatever page
+it's floating over.
 
 `/components` (`templates/components.html`, linked from the Admin menu as "System
 Components") is an architecture overview of the planned job-scan agent - Data
@@ -154,20 +221,31 @@ settings" writes a row, and once saved a config stops tracking the profile.
 Fetching and filtering are two decoupled stages - a component's own `run()` only ever
 fetches (it works off its own query params - role terms, location, date posted, ... - not
 the profile's hard preferences, and never touches the jobs table), filtering is a
-distinct, deliberate step against just a `run_id`, never auto-chained:
-`store.save_fetch_results(run_id, listings, error)` (fetch stage - a component's raw
-`run()` output goes straight onto `component_runs.raw_results_json`, status `"fetched"`)
-and `store.apply_run_filters(run_id)` (filter stage - loads that raw JSON, runs it through
-`src/filters.py`, stages what survives into `component_run_results`, clears the raw JSON,
-status `"ok"`/`"error"`; no-op unless status is `"fetched"`). `POST
-/components/<id>/runs/<run_id>/filter` (`component_run_filter()`) is the filter stage's
-route - a "Filter & dedupe now" button surfaces on the run summary (and, per row, on the
-`/tools/filter_dedupe` run log) whenever a run is sitting in `"fetched"` (raw fetched, not
-yet filtered). `component_runs.filtered_count`/`filtered_reasons` record what got dropped
-and why, shown on the run summary and run history.
+distinct, deliberate step against just a `run_id`, never auto-chained, and never triggered
+from a component's own page (only from the Filter & dedupe tool - see below):
+`store.save_fetch_results(run_id, listings, error)` (fetch stage - every listing a
+component's `run()` returns is staged as its own `component_run_results` row immediately,
+status `"kept"` by default, addable via "Add to dashboard" right away; a display-only copy
+also lands on `component_runs.raw_results_json`; run status `"fetched"`) and
+`store.apply_run_filters(run_id)` (filter stage - re-evaluates that run's already-staged
+rows through `src/filters.py` and flips whatever doesn't survive to status `"filtered"` +
+a `filter_reason` - kept rows are untouched, nothing is removed or re-inserted; clears the
+now-redundant raw JSON; run status `"ok"`/`"error"`; no-op unless status is `"fetched"`).
+`POST /components/<id>/runs/<run_id>/filter` (`component_run_filter()`) is the filter
+stage's route - its "Filter & dedupe now" button lives only on the `/tools/filter_dedupe`
+run log (per row, whenever a run is sitting in `"fetched"`), never on a component's own
+page: a component's page (`templates/component_detail.html`) shows every fetched listing
+- kept or filtered, it doesn't care - with "Add to dashboard" on each, so it stays
+filter-agnostic like every other component concern. `component_runs.filtered_count`/
+`filtered_reasons` record the aggregate (reason -> count) shown on the run summary and run
+history; the per-job verdict - which listing was kept vs. filtered, and why - lives on the
+same `component_run_results` row (`status`/`filter_reason` columns), rendered as an
+expandable "Per-job verdict" table per run on `/tools/filter_dedupe`
+(`templates/tool_detail.html`).
 Settings, run history, and run results persist in three tables (`component_settings`,
-`component_runs` - `raw_results_json` holds the pending-filter payload, cleared once
-filtered - `component_run_results` - `src/db.py`); `users.followed_companies` (JSON list,
+`component_runs` - `raw_results_json` holds a display-only fetch copy, cleared once
+filtered - `component_run_results`, one row per listing with its `status`/`filter_reason`
+- `src/db.py`); `users.followed_companies` (JSON list,
 same pattern as `roles`) is a profile-wide company watchlist the SerpAPI/ATS pages can
 extend directly. A result added to the dashboard gets `origin` set to the component's id
 (`serpapi`/`remoteok`/`ats`), not `'custom'`.
@@ -178,17 +256,28 @@ merged with the old separate "save to database" tool, since filtering a run and 
 saving what survives are two steps of one review flow, never done independently) shows:
 the hard-preference values currently read from the profile
 (`filters.describe_active_filters`); every source run's filter/dedup outcome across all
-components with a "Run" button on any still `"fetched"` (`store.get_all_component_runs`);
-staged results not yet on the dashboard, each with "Add to dashboard"
-(`store.get_staged_results_for_review` - every `component_run_results` row whose url isn't
-already in `jobs`); and the saved-jobs log, tagged with the mode of the run that staged it
-(`store.get_run_modes_for_urls`). The three pending tools just show their
+components with a "Run" button on any still `"fetched"`, and an expandable per-job
+kept/filtered breakdown on any already filtered (`store.get_all_component_runs`, each row
+enriched with `store.get_run_results(id)` in `app.py`'s `tool_detail()`); staged (kept)
+results not yet on the dashboard, each with "Add to dashboard"
+(`store.get_staged_results_for_review` - every `component_run_results` row with
+`status = "kept"` whose url isn't already in `jobs`); and the saved-jobs log, tagged with
+the mode of the run that staged it (`store.get_run_modes_for_urls`). The three pending
+tools just show their
 `blocked_reason`. `tailored_generation` shows a job `<select>` + Open button that
 navigates to `/jobs/<id>/tailor` (JS-built URL, no new route). `preference_learning` has
 its own Run form (scope job or "All jobs", model, test/live mode -> `POST
 /tools/preference_learning/run` -> `src/learning.run_learning`), this run's
 summary/revised-preferences table, full run history, and - unchanged - each preference
 category's current text/last-updated (`store.get_preferences_full`) below that.
+
+`/workflows` (`templates/workflows.html`, linked from the Admin menu as "Workflows") is a
+dashboard of multi-step flows, one card per `src/workflows.py` entry - description plus a
+chip per component/tool it will use, linking to that component's/tool's own page
+(`component_detail`/`tool_detail`). `job_search_rerank` now has a real runner
+(`workflows.run_job_search_rerank`, triggerable from the floating assistant chat - see
+above) but this page itself still has no manual "Run now" button/route; `tailor_top_3`
+has neither a runner nor a trigger yet.
 
 `webapp/tests/` - stdlib `unittest`, one file per `src/components/` module, all network
 calls mocked (`unittest.mock.patch` on `base.fetch_json`/`urlopen`). Run via `python -m

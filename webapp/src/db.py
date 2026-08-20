@@ -11,7 +11,12 @@ the resulting artifact_text (the actual cover letter/résumé/Q&A answer as of
 that turn, not just the conversational reply), and an optional thumbs up/down
 `rating` - see store.rate_chat_message),
 `artifacts` (generated cover letters/resumes/Q&A answers, also scoped to a
-chat_session), `preferences`
+chat_session), `assistant_messages` (the single, global floating-chat thread -
+one continuous log, not scoped to a job or a "pane"; job_id is nullable, set
+per-message to whichever job that turn concerned, see src/assistant.py;
+linked_chat_message_id points at the real chat_messages row when a turn drafted/
+revised a cover letter, so rating it hits the same row shown on that job's own
+Tailor page), `preferences`
 (learned writing-style preferences, one row per category: general,
 cover_letter, resume, qa), `documents` (extracted text from uploaded
 resume/cover-letter-sample/story-bank/chat-attachment files; job_id NULL means
@@ -26,9 +31,9 @@ reads the most recent completed live-mode run only, via fetch_latest_scores).
 `jobs` is the single source of truth for postings, with a UNIQUE constraint
 on `url` so the same posting can never be added twice, however it got there.
 `origin` marks how a row got in: 'sample' (from data/jobs.json) or 'custom'
-(added via the "Add Job Posting" popup). data/jobs.json is only read to seed
-`jobs` on first run and to refresh 'sample' rows when the user clicks
-"Reload sample data" (see store.reload_sample_jobs()); it's never merged in
+(added via the "Add Job Posting" popup, or a sourcing component). Production no
+longer auto-seeds data/jobs.json (it only refreshes 'sample' rows if the user
+clicks "Reload sample data", see store.reload_sample_jobs()); it's never merged in
 at read time.
 
 Every write runs inside db_transaction(), which commits on success and
@@ -166,6 +171,24 @@ def init_db():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS assistant_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tool_name TEXT,
+                tool_args TEXT,
+                tool_result TEXT,
+                model TEXT,
+                created_at TEXT NOT NULL,
+                response_time_seconds REAL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                artifact_text TEXT,
+                linked_chat_message_id INTEGER
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS preferences (
                 category TEXT PRIMARY KEY,
                 text TEXT NOT NULL DEFAULT '',
@@ -254,7 +277,9 @@ def init_db():
                 salary_max INTEGER NOT NULL DEFAULT 0,
                 currency TEXT NOT NULL DEFAULT 'USD',
                 url TEXT NOT NULL DEFAULT '',
-                description TEXT NOT NULL DEFAULT ''
+                description TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'kept',
+                filter_reason TEXT NOT NULL DEFAULT ''
             )
         """)
         conn.execute("""
@@ -320,6 +345,22 @@ def init_db():
                 conn.execute(f"ALTER TABLE component_runs ADD COLUMN {column} {coltype}")
             except sqlite3.OperationalError:
                 pass  # already migrated
+
+        # Migration: component_run_results gained a per-job filter verdict (status/reason,
+        # see apply_run_filters) - CREATE TABLE above only covers fresh DBs. Existing rows
+        # were all staged post-filter under the old pipeline, so they default to "kept".
+        for column, coltype in (
+            ("status", "TEXT NOT NULL DEFAULT 'kept'"),
+            ("filter_reason", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE component_run_results ADD COLUMN {column} {coltype}")
+            except sqlite3.OperationalError:
+                pass  # already migrated
+
+        # Migration: component_run_dropped_results was a short-lived table replaced by the
+        # status/filter_reason columns above - drop it if an earlier version created it.
+        conn.execute("DROP TABLE IF EXISTS component_run_dropped_results")
 
         conn.execute("DROP TABLE IF EXISTS custom_jobs")
         # Migration: job_progress.cover_letter/tailored_resume replaced by the artifacts table.
@@ -959,6 +1000,62 @@ def set_setting(key, value):
         )
 
 
+# ---- global assistant chat -------------------------------------------------
+
+_ASSISTANT_MESSAGE_COLUMNS = (
+    "id, job_id, role, content, tool_name, tool_args, tool_result, model, created_at, "
+    "response_time_seconds, input_tokens, output_tokens, artifact_text, linked_chat_message_id"
+)
+
+
+def insert_assistant_message(
+    role, content, created_at, job_id=None, tool_name=None, tool_args=None, tool_result=None,
+    model=None, response_time_seconds=None, input_tokens=None, output_tokens=None,
+    artifact_text=None, linked_chat_message_id=None,
+):
+    with db_transaction() as conn:
+        cur = conn.execute(
+            "INSERT INTO assistant_messages "
+            "(job_id, role, content, tool_name, tool_args, tool_result, model, created_at, "
+            "response_time_seconds, input_tokens, output_tokens, artifact_text, linked_chat_message_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                job_id, role, content, tool_name, tool_args, tool_result, model, created_at,
+                response_time_seconds, input_tokens, output_tokens, artifact_text, linked_chat_message_id,
+            ),
+        )
+        return cur.lastrowid
+
+
+def fetch_assistant_messages(limit=200):
+    """The global thread, oldest first, capped to the most recent `limit` rows."""
+    with db_transaction() as conn:
+        rows = conn.execute(
+            f"SELECT {_ASSISTANT_MESSAGE_COLUMNS} FROM assistant_messages "
+            "ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+def get_assistant_message(message_id):
+    with db_transaction() as conn:
+        row = conn.execute(
+            f"SELECT {_ASSISTANT_MESSAGE_COLUMNS} FROM assistant_messages WHERE id = ?", (message_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def fetch_last_assistant_job_id():
+    """The most recently discussed job_id across the whole thread, skipping job-agnostic
+    turns (job_id IS NULL) - see store.get_active_job_id."""
+    with db_transaction() as conn:
+        row = conn.execute(
+            "SELECT job_id FROM assistant_messages WHERE job_id IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    return row["job_id"] if row else None
+
+
 def get_component_config(component_id):
     with db_transaction() as conn:
         row = conn.execute(
@@ -1086,12 +1183,34 @@ def insert_run_result(run_id, listing):
         return cur.lastrowid
 
 
-def fetch_staged_urls():
-    """Every url already staged in some run's results, across all components and runs -
-    used to dedup a fresh fetch against listings already waiting for review, not just
-    ones already added to the jobs table."""
+def mark_run_result_filtered(result_id, reason):
+    """Flip an already-inserted result to status "filtered" once the filter stage drops it -
+    it stays in place (so a component's own page can keep showing every fetched listing,
+    kept or not) but disappears from anything querying status = "kept" (the staged-for-
+    review list, cross-run dedup)."""
     with db_transaction() as conn:
-        rows = conn.execute("SELECT DISTINCT url FROM component_run_results WHERE url != ''").fetchall()
+        conn.execute(
+            "UPDATE component_run_results SET status = 'filtered', filter_reason = ? WHERE id = ?",
+            (reason, result_id),
+        )
+
+
+def fetch_staged_urls(exclude_run_id=None):
+    """Every url already kept (passed the filter stage) in some run's results, across all
+    components and runs - used to dedup a fresh fetch against listings already waiting for
+    review, not just ones already added to the jobs table. exclude_run_id leaves out the
+    run currently being filtered, so it never counts its own not-yet-reviewed rows as
+    "already known"."""
+    with db_transaction() as conn:
+        if exclude_run_id is None:
+            rows = conn.execute(
+                "SELECT DISTINCT url FROM component_run_results WHERE url != '' AND status = 'kept'"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT DISTINCT url FROM component_run_results WHERE url != '' AND status = 'kept' AND run_id != ?",
+                (exclude_run_id,),
+            ).fetchall()
     return {r["url"] for r in rows}
 
 
@@ -1110,13 +1229,14 @@ def fetch_run_result(result_id):
 
 
 def fetch_recent_run_results(limit=200):
-    """Most recent staged (post-filter) results across every run, newest first, each
+    """Most recent kept (not filtered out) results across every run, newest first, each
     tagged with its run's component_id and mode - used by the merged Filter & dedupe +
     Save tool page (store.get_staged_results_for_review filters out ones already added)."""
     with db_transaction() as conn:
         rows = conn.execute(
             """SELECT res.*, r.component_id, r.mode FROM component_run_results res
                JOIN component_runs r ON r.id = res.run_id
+               WHERE res.status = 'kept'
                ORDER BY res.id DESC LIMIT ?""",
             (limit,),
         ).fetchall()

@@ -209,11 +209,6 @@ def add_followed_companies(names):
     save_followed_companies(profile["followed_companies"] + list(names))
 
 
-def _seed_sample_jobs_if_needed():
-    if not db.has_sample_jobs():
-        db.upsert_sample_jobs(_load_sample_catalog())
-
-
 # ---- tailoring chat sessions ("compare panes") -----------------------------
 # Each session is one independent thread + model + artifact/qa-list - no cap on how
 # many can exist per job+tab - see db.py's chat_sessions table docstring.
@@ -285,6 +280,10 @@ def add_chat_message(
         session_id, job_id, chat_type, role, content, model, _now(),
         response_time_seconds, input_tokens, output_tokens, artifact_text,
     )
+
+
+def get_chat_message(message_id):
+    return db.get_chat_message(message_id)
 
 
 def rate_chat_message(message_id, rating):
@@ -440,6 +439,39 @@ def save_preference(category, text):
     db.update_preference(category, text, _now())
 
 
+# ---- global assistant chat --------------------------------------------------
+# One continuous thread, not scoped to a job or a "pane" - see db.py's assistant_messages
+# docstring. src/assistant.py owns the turn logic; this is just the persistence wrapper.
+
+def add_assistant_message(role, content, **kwargs):
+    return db.insert_assistant_message(role, content, _now(), **kwargs)
+
+
+def get_assistant_messages(limit=200):
+    return db.fetch_assistant_messages(limit)
+
+
+def get_assistant_message(message_id):
+    return db.get_assistant_message(message_id)
+
+
+def get_active_job_id():
+    """The most recently discussed job in this thread, across every kind of turn - the
+    fallback when a new message doesn't name a job (see src/assistant.py.resolve_job)."""
+    return db.fetch_last_assistant_job_id()
+
+
+ASSISTANT_MODEL_SETTING = "assistant_model"
+
+
+def get_assistant_model(default):
+    return db.get_setting(ASSISTANT_MODEL_SETTING, default)
+
+
+def set_assistant_model(model):
+    db.set_setting(ASSISTANT_MODEL_SETTING, model)
+
+
 # ---- documents (RAG knowledge base) ----------------------------------------
 # Chunking/embedding lives in src/rag.py; these wrappers just cover the DB side
 # (chunking itself needs the new document row's id, so it happens here, right
@@ -534,39 +566,46 @@ def save_run_result(run_id, listing):
 
 
 def save_fetch_results(run_id, listings, error_message=None):
-    """The fetch stage's only write: stash a component's raw output on its run, status
-    "fetched" (awaiting filtering) or "error" (nothing came back and the fetch itself
-    failed). Decoupled from filtering on purpose - a component's run() only needs to reach
-    this far; apply_run_filters is a separate step that can run any time after, against
-    just the run_id, with no knowledge of which component or config produced it."""
+    """The fetch stage's only write: stage every listing a component's run() returned as its
+    own row (status "kept" by default - see src/db.py's component_run_results), so a
+    component's own page can show and add-to-dashboard all of them immediately, with no
+    filtering involved. Also keeps the raw JSON on component_runs for the audit trail
+    (db.fetch_raw_results). status "fetched" means "awaiting an explicit filter pass" (see
+    apply_run_filters) or "error" (nothing came back and the fetch itself failed) -
+    decoupled from filtering on purpose; a component's run() only needs to reach this far."""
     status = "error" if error_message and not listings else "fetched"
     db.save_raw_results(run_id, listings, status, error_message)
+    for listing in listings:
+        save_run_result(run_id, listing)
 
 
 def apply_run_filters(run_id):
-    """The filter stage: load a run's raw fetch results (independent of whatever called
-    save_fetch_results, and whenever after it), run them through the hard-preference gate +
-    dedup (src/filters.py), stage what survives, and mark the run finished. No-op if this
-    run has nothing pending (already filtered, or never fetched)."""
+    """The filter stage: run this run's already-staged results (see save_fetch_results)
+    through the hard-preference gate + dedup (src/filters.py), and flip whatever doesn't
+    survive to status "filtered" with why - kept rows are untouched. Explicit, separate
+    from fetching, and run from the Filter & dedupe tool (not a component's own page - see
+    src/components/README.md). No-op if this run has nothing pending (already filtered, or
+    never fetched)."""
     run = db.fetch_run(run_id)
     if run is None or run["status"] != "fetched":
         return
 
-    listings = db.fetch_raw_results(run_id)
-    kept, dropped = filters.filter_and_dedupe(listings, profile, known_urls=get_known_urls())
-    for listing in kept:
-        save_run_result(run_id, listing)
+    rows = db.fetch_run_results(run_id)
+    kept, dropped = filters.filter_and_dedupe(rows, profile, known_urls=get_known_urls(exclude_run_id=run_id))
+    for row, reason in dropped:
+        db.mark_run_result_filtered(row["id"], reason)
 
     finish_run(run_id, "error" if run["error_message"] else "ok", run["fetched_count"],
                run["error_message"], filtered_count=len(dropped), filtered_reasons=filters.summarize_drops(dropped))
-    db.clear_raw_results(run_id)
+    db.clear_raw_results(run_id)  # display-only copy, superseded by the staged rows above
 
 
-def get_known_urls():
-    """Every url already on the dashboard or already staged from a previous run - one
-    query per run instead of one per listing. Used by src/filters.py's cross-run dedup
-    before a fresh fetch is staged."""
-    return {j["url"] for j in jobs} | db.fetch_staged_urls()
+def get_known_urls(exclude_run_id=None):
+    """Every url already on the dashboard or already kept (passed filtering) from a
+    previous run - one query per run instead of one per listing. Used by src/filters.py's
+    cross-run dedup when a run is filtered. exclude_run_id leaves out the run being
+    filtered itself, so its own (not-yet-reviewed) rows never count as "already known"."""
+    return {j["url"] for j in jobs} | db.fetch_staged_urls(exclude_run_id)
 
 
 def get_component_runs(component_id):
@@ -709,5 +748,4 @@ def get_preference_learning_run_results(run_id):
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 _load_user()
-_seed_sample_jobs_if_needed()
 reload_jobs()

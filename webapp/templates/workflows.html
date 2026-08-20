@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Workflows - Dream Job Landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+
+<div class="container">
+  <h1>Workflows</h1>
+  <p class="text-muted">Planned multi-step flows chaining the components and tools from System Components. Not implemented yet.</p>
+
+  <div class="hr"></div>
+
+  <div class="component-grid">
+    {% for id, w in workflows.items() %}
+    <div class="component-card">
+      <div class="kicker">Workflow</div>
+      <h3>{{ w.name }}</h3>
+      <p class="text-muted">{{ w.description }}</p>
+      <div class="uses">
+        {% for kind, ref in w.uses %}
+          {% if kind == 'component' %}
+            <a href="{{ url_for('component_detail', component_id=ref) }}" class="tag tag-outline">{{ components[ref].name }}</a>
+          {% elif kind == 'tool' %}
+            <a href="{{ url_for('tool_detail', tool_id=ref) }}" class="tag tag-outline">{{ tools[ref].name }}</a>
+          {% else %}
+            <span class="tag tag-neutral">{{ ref }}</span>
+          {% endif %}
+        {% endfor %}
+      </div>
+      <span class="tag tag-neutral">Not implemented</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

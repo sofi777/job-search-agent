@@ -3,19 +3,9 @@
 {% block body %}
 {% include "_nav.html" %}
 
-<style>
-  .component-section { margin-bottom: var(--space-8); }
-  .component-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: var(--space-3); }
-  .component-card { border: 1px solid var(--color-divider); background: var(--color-surface); padding: var(--space-4); display: flex; flex-direction: column; gap: 6px; }
-  .component-card h3 { font-size: 15px; margin: 0; }
-  .component-card p { font-size: 13px; margin: 0; }
-  a.component-card { text-decoration: none; color: inherit; }
-  a.component-card:hover { border-color: var(--color-accent); }
-</style>
-
 <div class="container">
   <h1>System Components</h1>
-  <p class="text-muted">Architecture overview for the job-scan agent - data connectors, the agent core, and the tools it drives. UI only for now; nothing here is wired up yet.</p>
+  <p class="text-muted">Architecture overview for the job-scan agent - data connectors, the agent core, and the tools it drives. See each card's status for what's actually wired up.</p>
 
   <div class="hr"></div>
 
@@ -64,19 +54,19 @@
         <div class="kicker">State &middot; DB</div>
         <h3>Jobs table</h3>
         <p class="text-muted">Dedup + last scan - the existing database, not agent memory</p>
-        <span class="tag tag-neutral">Not connected</span>
+        <span class="tag tag-outline">Live</span>
       </div>
       <div class="component-card">
         <div class="kicker">Soul</div>
         <h3>Profile + scoring criteria</h3>
         <p class="text-muted">Your onboarding profile: resume, story bank, industries and free-text preferences</p>
-        <span class="tag tag-neutral">Not connected</span>
+        <span class="tag tag-outline">Live</span>
       </div>
       <div class="component-card">
         <div class="kicker">Agent core</div>
         <h3>AI Agent</h3>
         <p class="text-muted">OpenRouter, one call function for every LLM call (chat or scheduled) + LangGraph orchestration</p>
-        <span class="tag tag-neutral">Not connected</span>
+        <span class="tag tag-accent">Partial</span>
       </div>
     </div>
   </section>
@@ -94,7 +84,7 @@
       <a class="component-card" href="{{ url_for('tool_detail', tool_id='extract_structure') }}">
         <div class="kicker">Tool</div>
         <h3>Extract &amp; structure</h3>
-        <p class="text-muted">Fetch listing, parse into job fields</p>
+        <p class="text-muted">Parses a raw-text listing (e.g. a Gmail alert email) into job fields. Not needed for SerpAPI/ATS/RemoteOK - those APIs already return structured listings, description included.</p>
         <span class="tag tag-neutral">Not connected</span>
       </a>
       <a class="component-card" href="{{ url_for('tool_detail', tool_id='score_fit') }}">

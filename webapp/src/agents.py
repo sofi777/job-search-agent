@@ -540,3 +540,90 @@ def revise_preferences(artifact_type, feedback, current_content, preferences, mo
     if not data.get("changed"):
         return None
     return {"category": data.get("category") or "general", "text": data.get("text") or ""}
+
+
+# ---- global assistant chat -------------------------------------------------
+
+ASSISTANT_JOBS_SUMMARY_LIMIT = 30
+
+
+def _format_jobs_summary(jobs):
+    if not jobs:
+        return "(none yet)"
+    # Highest match first - the jobs most likely to come up in conversation, since the prompt
+    # is capped rather than listing every job on a large dashboard.
+    ranked = sorted(jobs, key=lambda j: j.get("match") if j.get("match") is not None else -1, reverse=True)
+    lines = []
+    for j in ranked[:ASSISTANT_JOBS_SUMMARY_LIMIT]:
+        match = f"match {j['match']}%" if j.get("match") is not None else "not yet scored"
+        lines.append(f"#{j['id']}: {j['title']} at {j['company']} - {j['status']}, {match}")
+    if len(jobs) > ASSISTANT_JOBS_SUMMARY_LIMIT:
+        lines.append(f"(+{len(jobs) - ASSISTANT_JOBS_SUMMARY_LIMIT} more, not shown)")
+    return "\n".join(lines)
+
+
+def answer_assistant_message(message, history, profile, preferences, jobs, model):
+    """One turn of the general-purpose floating chat - not tied to a job. Grounded in
+    cross-session memory: profile, learned writing preferences, and a compact jobs-on-
+    dashboard summary (id/title/company/status/match - not full descriptions, to keep the
+    prompt small and avoid leaking unrelated job text into an off-topic turn).
+
+    Pure function, no DB access - same contract as run_tailor_turn. Plain conversational
+    reply, not JSON (there's no artifact/structured decision here). Returns
+    (reply_text, used_model, usage).
+    """
+    system_content = _load_prompt("assistant_chat.txt").format(
+        profile_name=profile.get("name", "the candidate"),
+        profile_roles=", ".join(profile.get("roles", [])) or "not specified",
+        profile_home_address=profile.get("home_address", "not specified"),
+        pref_general=preferences.get("general") or "(none yet)",
+        jobs_summary=_format_jobs_summary(jobs),
+    )
+    messages = [{"role": "system", "content": system_content}, *trim_history(history), {"role": "user", "content": message}]
+    reply, used_model, usage = send_chat(messages, model)
+    return reply.strip(), used_model, usage
+
+
+def _format_history_text(history):
+    if not history:
+        return "(nothing yet)"
+    return "\n".join(f"{m['role']}: {m['content']}" for m in trim_history(history))
+
+
+def route_assistant_turn(message, history, active_job, live_workflows):
+    """Classify one assistant-widget turn - same "prompt -> parsed JSON -> Python
+    dispatches" shape as classify_turn. `active_job` is {"title", "company"} or None.
+    `live_workflows` is [{"id", "name", "description"}, ...], built from workflows.WORKFLOWS
+    entries with status == "live" - the only workflow ids the model may return; wiring up a
+    new workflow's runner later makes it routable automatically, no change needed here.
+
+    Returns {"action": one of live_workflows' ids, "chat", or "cover_letter",
+             "job_query": short phrase naming the job this turn is about, or None}.
+
+    Defaults to {"action": "chat", "job_query": None} on any failure (RuntimeError, an
+    unparseable reply, or an action id outside the allowed set) - unlike classify_turn's
+    "default to the safe-to-over-trigger option" bias, wrongly firing a paid workflow or an
+    unwanted document draft is the unsafe direction here, so the inert action is the only
+    safe default.
+    """
+    allowed_actions = {w["id"] for w in live_workflows} | {"chat", "cover_letter"}
+    fallback = {"action": "chat", "job_query": None}
+
+    action_list = "\n".join(f'- "{w["id"]}": {w["description"]}' for w in live_workflows)
+    active_job_line = f"{active_job['title']} at {active_job['company']}" if active_job else "(none)"
+    prompt = _load_prompt("route_assistant_turn.txt").format(
+        history_text=_format_history_text(history),
+        active_job_line=active_job_line,
+        message=message,
+        action_list=action_list or "(no workflows currently available)",
+    )
+    try:
+        reply, _used_model, _usage = send_chat([{"role": "user", "content": prompt}], DEFAULT_MODEL)
+        data = _parse_json_reply(reply)
+    except RuntimeError:
+        return fallback
+
+    action = data.get("action")
+    if action not in allowed_actions:
+        return fallback
+    return {"action": action, "job_query": data.get("job_query") or None}

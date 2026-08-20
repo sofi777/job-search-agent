@@ -13,10 +13,10 @@
       </select>
     </div>
     <div class="field">
-      <label>Remote</label>
-      <select class="input" name="{{ name_prefix }}_remote_only">
-        {% for value, human in serpapi_options.remote_only %}
-        <option value="{{ value }}" {{ 'selected' if (q.remote_only and value == '1') or (not q.remote_only and value == '') else '' }}>{{ human }}</option>
+      <label>Work mode</label>
+      <select class="input" name="{{ name_prefix }}_work_mode">
+        {% for value, human in serpapi_options.work_mode %}
+        <option value="{{ value }}" {{ 'selected' if (q.work_mode or 'any') == value else '' }}>{{ human }}</option>
         {% endfor %}
       </select>
     </div>

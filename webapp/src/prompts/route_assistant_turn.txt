@@ -1,0 +1,24 @@
+A candidate is chatting with an assistant embedded in their job-search app. Decide what this
+message is asking for.
+
+Recent conversation:
+{history_text}
+
+Currently active job (the one most recently discussed, if any): {active_job_line}
+
+Latest message: "{message}"
+
+Available actions:
+{action_list}
+- "cover_letter": draft or revise a cover letter for a specific job.
+- "chat": anything else - a question, general conversation, or feedback on something already
+  shown (feedback on a draft belongs to "cover_letter" only if it's asking for a new
+  revision; otherwise treat it as "chat").
+
+If the action needs a job (cover_letter, or any workflow scoped to one job) and the message
+names one, put a short phrase identifying it (title/company/rank like "top job") in
+"job_query". Leave "job_query" null if no specific job is named or needed.
+
+Reply with ONLY a JSON object, no markdown fences, no commentary, with exactly these keys:
+"action": one of the action ids listed above, exactly as written
+"job_query": a short phrase naming the job, or null
