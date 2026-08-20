@@ -109,11 +109,16 @@ def onboarding(step):
                 # extract before .save() consumes the stream
                 warning = _save_optional_profile_document(file, "resume", filename)
                 if warning:
+                    # Extraction failed - nothing was indexed, so don't touch resume_filename
+                    # or the AI-suggested fields either. Saving them here would claim a resume
+                    # is on file (and silently discard any roles/home_address the user already
+                    # customized) when in fact nothing new was ever read.
                     document_warnings.append(warning)
-                file.save(store.UPLOADS_DIR / filename)
-                profile["resume_filename"] = filename
-                profile["roles"] = ai.suggest_roles(profile["resume_filename"])
-                profile["home_address"] = ai.suggest_home_address(profile["resume_filename"])
+                else:
+                    file.save(store.UPLOADS_DIR / filename)
+                    profile["resume_filename"] = filename
+                    profile["roles"] = ai.suggest_roles(profile["resume_filename"])
+                    profile["home_address"] = ai.suggest_home_address(profile["resume_filename"])
             elif not profile["resume_filename"]:
                 error = "Please upload your resume to continue."
 
@@ -149,6 +154,15 @@ def onboarding(step):
 
         if step == "location":
             action = request.form.get("action")
+            # home_address/commute_miles/remote_ok live in the same form as the Continue button,
+            # but adding/removing a country submits a separate small form (see _macros.html
+            # chip_row) - onboarding_location.html's script carries these along on that submit
+            # too, so capture them whenever present rather than only on action == "continue",
+            # or a country add/remove would silently reset them to their last-saved value.
+            if "home_address" in request.form:
+                profile["home_address"] = request.form.get("home_address", profile["home_address"])
+                profile["commute_miles"] = int(request.form.get("commute_miles") or 0)
+                profile["remote_ok"] = bool(request.form.get("remote_ok"))
             if action == "add_country":
                 v = store.normalize_country(request.form.get("country", ""))
                 if v and v not in profile["eligible_countries"]:
@@ -161,10 +175,6 @@ def onboarding(step):
                     profile["remote_countries"].append(v)
             elif action == "remove_remote_country":
                 profile["remote_countries"] = [c for c in profile["remote_countries"] if c != request.form.get("country")]
-            elif action == "continue":
-                profile["home_address"] = request.form.get("home_address", profile["home_address"])
-                profile["commute_miles"] = int(request.form.get("commute_miles", profile["commute_miles"]))
-                profile["remote_ok"] = bool(request.form.get("remote_ok"))
             store.save_profile()
             if action == "continue":
                 return redirect(url_for("onboarding", step="preferences"))

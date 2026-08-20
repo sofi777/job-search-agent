@@ -15,6 +15,7 @@
   --color-neutral-700: #605d5d;
   --color-neutral-800: #444141;
   --color-neutral-900: #2d2b2b;
+  --color-success: #1a8a4a;
   --font-heading: "Archivo", system-ui, sans-serif;
   --font-body: "Archivo", system-ui, sans-serif;
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px; --space-8: 32px;
@@ -106,6 +107,24 @@ textarea.input { min-height: 90px; resize: vertical; }
   display: flex; flex-direction: column; align-items: center; gap: 6px; background: var(--color-surface);
 }
 .dropzone.filled { background: var(--color-accent-100); }
+.dropzone-row { display: flex; align-items: center; gap: 8px; }
+.dropzone-check {
+  display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
+  border-radius: 50%; background: var(--color-success); color: #fff; font-size: 10px; line-height: 1; flex: none;
+}
+.dropzone-check[hidden] { display: none; }
+.dropzone-progress {
+  width: 100%; max-width: 220px; height: 4px; background: var(--color-divider); margin-top: 4px;
+  overflow: hidden; display: none;
+}
+.dropzone.uploading .dropzone-progress { display: block; }
+.dropzone-progress-fill { height: 100%; width: 0%; background: var(--color-accent); transition: width 0.15s linear; }
+.visually-hidden-file { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; padding: 0; }
+.spinner {
+  width: 12px; height: 12px; border: 2px solid rgba(255, 255, 255, 0.4); border-top-color: #fff;
+  border-radius: 50%; display: inline-block; animation: spin 0.6s linear infinite; vertical-align: -1px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .wizard-actions { display: flex; justify-content: space-between; margin-top: var(--space-6); }
 .wizard-actions.end { justify-content: flex-end; }
 

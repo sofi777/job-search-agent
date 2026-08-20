@@ -14,30 +14,51 @@
     <p style="color:var(--color-accent);font-size:13px;margin-bottom:var(--space-3);">{{ warning }} - try a different file, or Continue again to skip it.</p>
     {% endfor %}
 
-    <form method="post" enctype="multipart/form-data">
-      <div class="dropzone {{ 'filled' if profile.resume_filename else '' }}">
-        <div style="font-family:var(--font-heading);font-weight:800;">
-          {{ profile.resume_filename or 'Choose your resume' }}
+    <form method="post" enctype="multipart/form-data" data-upload-form>
+      <div class="dropzone {{ 'filled' if profile.resume_filename else '' }}" data-field="resume">
+        <div class="dropzone-row">
+          <span class="dropzone-name" data-role="name" style="font-family:var(--font-heading);font-weight:800;">{{ profile.resume_filename or 'Choose your resume' }}</span>
+          <span class="dropzone-check" data-role="check" {{ '' if profile.resume_filename else 'hidden' }}>&check;</span>
         </div>
-        <div class="text-muted">PDF or DOCX, up to 10MB{{ ' (already on file, re-upload to replace it)' if profile.resume_filename else '' }}</div>
-        <input type="file" name="resume" accept=".pdf,.docx" {{ 'required' if not profile.resume_filename else '' }} style="margin-top:8px;">
+        <div class="text-muted">PDF or DOCX, up to 10MB{{ ' (re-upload to replace it)' if profile.resume_filename else '' }}</div>
+        <label class="btn btn-secondary btn-small">
+          {{ 'Replace file' if profile.resume_filename else 'Choose file' }}
+          <input type="file" name="resume" accept=".pdf,.docx" {{ 'required' if not profile.resume_filename else '' }} class="visually-hidden-file">
+        </label>
+        <div class="dropzone-progress" data-role="progress"><div class="dropzone-progress-fill" data-role="progress-fill"></div></div>
       </div>
 
       <p class="text-muted" style="margin:var(--space-4) 0 var(--space-2);">Optional - improves every draft, reused across every job:</p>
 
       <div class="field">
         <label>A cover letter you've written before</label>
-        <div class="dropzone {{ 'filled' if profile_documents.get('cover_letter_sample') else '' }}" style="padding:var(--space-3);">
-          <div class="text-muted">{{ profile_documents.get('cover_letter_sample') or 'PDF, DOCX, or TXT' }}{{ ' (already on file, re-upload to replace it)' if profile_documents.get('cover_letter_sample') else '' }}</div>
-          <input type="file" name="cover_letter_sample" accept=".pdf,.docx,.txt,.md" style="margin-top:8px;">
+        <div class="dropzone {{ 'filled' if profile_documents.get('cover_letter_sample') else '' }}" data-field="cover_letter_sample" style="padding:var(--space-3);">
+          <div class="dropzone-row">
+            <span class="dropzone-name" data-role="name">{{ profile_documents.get('cover_letter_sample') or 'PDF, DOCX, or TXT' }}</span>
+            <span class="dropzone-check" data-role="check" {{ '' if profile_documents.get('cover_letter_sample') else 'hidden' }}>&check;</span>
+          </div>
+          {% if profile_documents.get('cover_letter_sample') %}<div class="text-muted">Re-upload to replace it</div>{% endif %}
+          <label class="btn btn-secondary btn-small" style="margin-top:8px;">
+            {{ 'Replace file' if profile_documents.get('cover_letter_sample') else 'Choose file' }}
+            <input type="file" name="cover_letter_sample" accept=".pdf,.docx,.txt,.md" class="visually-hidden-file">
+          </label>
+          <div class="dropzone-progress" data-role="progress"><div class="dropzone-progress-fill" data-role="progress-fill"></div></div>
         </div>
       </div>
 
       <div class="field">
         <label>Story bank (achievements, STAR stories, a "brag document" - whatever you've got). In a .docx, use a Heading style before each story (e.g. Heading 2); otherwise separate stories with a blank line. Each story becomes its own retrievable chunk.</label>
-        <div class="dropzone {{ 'filled' if profile_documents.get('story_bank') else '' }}" style="padding:var(--space-3);">
-          <div class="text-muted">{{ profile_documents.get('story_bank') or 'PDF, DOCX, or TXT' }}{{ ' (already on file, re-upload to replace it)' if profile_documents.get('story_bank') else '' }}</div>
-          <input type="file" name="story_bank" accept=".pdf,.docx,.txt,.md" style="margin-top:8px;">
+        <div class="dropzone {{ 'filled' if profile_documents.get('story_bank') else '' }}" data-field="story_bank" style="padding:var(--space-3);">
+          <div class="dropzone-row">
+            <span class="dropzone-name" data-role="name">{{ profile_documents.get('story_bank') or 'PDF, DOCX, or TXT' }}</span>
+            <span class="dropzone-check" data-role="check" {{ '' if profile_documents.get('story_bank') else 'hidden' }}>&check;</span>
+          </div>
+          {% if profile_documents.get('story_bank') %}<div class="text-muted">Re-upload to replace it</div>{% endif %}
+          <label class="btn btn-secondary btn-small" style="margin-top:8px;">
+            {{ 'Replace file' if profile_documents.get('story_bank') else 'Choose file' }}
+            <input type="file" name="story_bank" accept=".pdf,.docx,.txt,.md" class="visually-hidden-file">
+          </label>
+          <div class="dropzone-progress" data-role="progress"><div class="dropzone-progress-fill" data-role="progress-fill"></div></div>
         </div>
       </div>
 
@@ -48,3 +69,4 @@
   </div>
 </div>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='upload.js') }}"></script>{% endblock %}

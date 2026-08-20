@@ -52,8 +52,17 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   staged-for-review results, added-jobs log; merged with the old separate "save to
   database" tool, see `webapp/` section) is assembled in `app.py`, not here.
 - **`scripts/`** - quick manual scripts (`test_agents.py`, `show_last_call.py`).
-- **`templates/`** - Jinja2 HTML, all extending `base.html`.
+- **`templates/`** - Jinja2 HTML, all extending `base.html`. Pages with file uploads
+  (`onboarding_resume.html`, `profile.html`) mark their `<form>` `data-upload-form` and
+  each dropzone `data-field="..."` to opt into `static/upload.js`.
 - **`static/style.css`** - design tokens + component styles.
+- **`static/upload.js`** - progressive enhancement for `data-upload-form` forms: hides the
+  native file input behind a styled button, shows a checkmark once a file is
+  staged/on-file, disables the submit button and shows per-file upload progress (via one
+  XHR `progress` event, split across files by byte range) instead of a page that looks
+  frozen mid-submit, then either follows the server's redirect or swaps in its re-rendered
+  HTML (e.g. on a warning) via `document.write`. No build step, no bundler - included with
+  a plain `<script src>` in a template's `scripts` block.
 - **`data/`** - all app data, mostly gitignored (see `.gitignore` for what's sample
   vs. user data):
   - `app.db` - SQLite: user profile, jobs, per-job progress, chat_sessions (compare

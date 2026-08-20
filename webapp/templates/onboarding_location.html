@@ -62,3 +62,29 @@
   </div>
 </div>
 {% endblock %}
+{% block scripts %}
+<script>
+  // Adding/removing a country submits its own small form (see _macros.html chip_row) - a
+  // separate full-page round trip that would otherwise discard whatever's typed in
+  // home_address/commute_miles/remote_ok but not yet saved via Continue. Carry the live
+  // values along on every such submit so nothing already saved gets reset either.
+  document.querySelectorAll("form").forEach(function (form) {
+    if (form.id === "location-form") return;
+    form.addEventListener("submit", function () {
+      var main = document.getElementById("location-form");
+      ["home_address", "commute_miles"].forEach(function (name) {
+        var field = document.createElement("input");
+        field.type = "hidden";
+        field.name = name;
+        field.value = main.elements[name].value;
+        form.appendChild(field);
+      });
+      var remoteOk = document.createElement("input");
+      remoteOk.type = "hidden";
+      remoteOk.name = "remote_ok";
+      remoteOk.value = main.elements["remote_ok"].checked ? "on" : "";
+      form.appendChild(remoteOk);
+    });
+  });
+</script>
+{% endblock %}

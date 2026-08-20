@@ -54,14 +54,22 @@ function addChipOnEnter(event, name, input) {
   <p style="color:var(--color-accent);font-size:13px;margin-bottom:var(--space-3);">{{ warning }} - try a different file, or Save again to skip it.</p>
   {% endfor %}
 
-  <form method="post" enctype="multipart/form-data">
+  <form method="post" enctype="multipart/form-data" data-upload-form>
 
     <h2>Documents</h2>
     <div class="field">
       <label>Resume</label>
-      <div class="dropzone filled" style="padding:var(--space-3);">
-        <div class="text-muted">{{ profile.resume_filename }} (upload to replace it)</div>
-        <input type="file" name="resume" accept=".pdf,.docx" style="margin-top:8px;">
+      <div class="dropzone filled" data-field="resume" style="padding:var(--space-3);">
+        <div class="dropzone-row">
+          <span class="dropzone-name" data-role="name">{{ profile.resume_filename }}</span>
+          <span class="dropzone-check" data-role="check">&check;</span>
+        </div>
+        <div class="text-muted">Re-upload to replace it</div>
+        <label class="btn btn-secondary btn-small" style="margin-top:8px;">
+          Replace file
+          <input type="file" name="resume" accept=".pdf,.docx" class="visually-hidden-file">
+        </label>
+        <div class="dropzone-progress" data-role="progress"><div class="dropzone-progress-fill" data-role="progress-fill"></div></div>
       </div>
       <div style="margin-top:8px;">
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:4px;">
@@ -75,9 +83,17 @@ function addChipOnEnter(event, name, input) {
 
     <div class="field">
       <label>A cover letter you've written before</label>
-      <div class="dropzone {{ 'filled' if profile_documents.get('cover_letter_sample') else '' }}" style="padding:var(--space-3);">
-        <div class="text-muted">{{ profile_documents.get('cover_letter_sample') or 'PDF, DOCX, or TXT' }}{{ ' (upload to replace it)' if profile_documents.get('cover_letter_sample') else '' }}</div>
-        <input type="file" name="cover_letter_sample" accept=".pdf,.docx,.txt,.md" style="margin-top:8px;">
+      <div class="dropzone {{ 'filled' if profile_documents.get('cover_letter_sample') else '' }}" data-field="cover_letter_sample" style="padding:var(--space-3);">
+        <div class="dropzone-row">
+          <span class="dropzone-name" data-role="name">{{ profile_documents.get('cover_letter_sample') or 'PDF, DOCX, or TXT' }}</span>
+          <span class="dropzone-check" data-role="check" {{ '' if profile_documents.get('cover_letter_sample') else 'hidden' }}>&check;</span>
+        </div>
+        {% if profile_documents.get('cover_letter_sample') %}<div class="text-muted">Re-upload to replace it</div>{% endif %}
+        <label class="btn btn-secondary btn-small" style="margin-top:8px;">
+          {{ 'Replace file' if profile_documents.get('cover_letter_sample') else 'Choose file' }}
+          <input type="file" name="cover_letter_sample" accept=".pdf,.docx,.txt,.md" class="visually-hidden-file">
+        </label>
+        <div class="dropzone-progress" data-role="progress"><div class="dropzone-progress-fill" data-role="progress-fill"></div></div>
         {% if profile_documents.get('cover_letter_sample') %}
         <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;">
           <input type="checkbox" name="remove_cover_letter_sample" value="1"> Remove this file
@@ -88,9 +104,17 @@ function addChipOnEnter(event, name, input) {
 
     <div class="field">
       <label>Story bank (achievements, STAR stories, a "brag document")</label>
-      <div class="dropzone {{ 'filled' if profile_documents.get('story_bank') else '' }}" style="padding:var(--space-3);">
-        <div class="text-muted">{{ profile_documents.get('story_bank') or 'PDF, DOCX, or TXT' }}{{ ' (upload to replace it)' if profile_documents.get('story_bank') else '' }}</div>
-        <input type="file" name="story_bank" accept=".pdf,.docx,.txt,.md" style="margin-top:8px;">
+      <div class="dropzone {{ 'filled' if profile_documents.get('story_bank') else '' }}" data-field="story_bank" style="padding:var(--space-3);">
+        <div class="dropzone-row">
+          <span class="dropzone-name" data-role="name">{{ profile_documents.get('story_bank') or 'PDF, DOCX, or TXT' }}</span>
+          <span class="dropzone-check" data-role="check" {{ '' if profile_documents.get('story_bank') else 'hidden' }}>&check;</span>
+        </div>
+        {% if profile_documents.get('story_bank') %}<div class="text-muted">Re-upload to replace it</div>{% endif %}
+        <label class="btn btn-secondary btn-small" style="margin-top:8px;">
+          {{ 'Replace file' if profile_documents.get('story_bank') else 'Choose file' }}
+          <input type="file" name="story_bank" accept=".pdf,.docx,.txt,.md" class="visually-hidden-file">
+        </label>
+        <div class="dropzone-progress" data-role="progress"><div class="dropzone-progress-fill" data-role="progress-fill"></div></div>
         {% if profile_documents.get('story_bank') %}
         <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;">
           <input type="checkbox" name="remove_story_bank" value="1"> Remove this file
@@ -213,3 +237,4 @@ function addChipOnEnter(event, name, input) {
   </form>
 </div>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='upload.js') }}"></script>{% endblock %}
