@@ -17,6 +17,9 @@
     {% endif %}
     <span class="tag {{ 'tag-accent' if job.status == 'new' else 'tag-neutral' }}">{{ job.status|capitalize }}</span>
   </div>
+  {% if job.match_summary %}
+  <p class="text-muted" style="font-size:13px;">{{ job.match_summary }}</p>
+  {% endif %}
   <div class="hr"></div>
 
   <p class="text-muted">{{ job.currency }} {{ '{:,}'.format(job.salary_min) }}&ndash;{{ '{:,}'.format(job.salary_max) }} &middot; Posted {{ job.posted }}</p>

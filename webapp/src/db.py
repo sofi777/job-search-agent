@@ -18,7 +18,10 @@ resume/cover-letter-sample/story-bank/chat-attachment files; job_id NULL means
 profile-wide, reused across every job), `chunks` (documents split for RAG,
 embeddings live in Chroma at data/chroma/ - see src/rag.py), `citations`
 (which chunks backed a given assistant reply, for the clickable "[Source N]"
-UI), and `settings` (small key/value config, currently just chunk_size_tokens).
+UI), `settings` (small key/value config, currently just chunk_size_tokens),
+`scoring_runs` + `scoring_run_results` (fit-scoring run log - see
+src/scanner.py - one row per job scored per run; the dashboard's match %
+reads the most recent completed live-mode run only, via fetch_latest_scores).
 
 `jobs` is the single source of truth for postings, with a UNIQUE constraint
 on `url` so the same posting can never be added twice, however it got there.
@@ -254,6 +257,50 @@ def init_db():
                 description TEXT NOT NULL DEFAULT ''
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scoring_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                mode TEXT NOT NULL DEFAULT 'test',
+                status TEXT NOT NULL DEFAULT 'running',
+                model TEXT NOT NULL DEFAULT '',
+                scored_count INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scoring_run_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES scoring_runs(id),
+                job_id INTEGER NOT NULL,
+                score INTEGER NOT NULL DEFAULT 0,
+                summary TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS preference_learning_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                scope_job_id INTEGER,
+                mode TEXT NOT NULL DEFAULT 'test',
+                status TEXT NOT NULL DEFAULT 'running',
+                model TEXT NOT NULL DEFAULT '',
+                processed_count INTEGER NOT NULL DEFAULT 0,
+                updated_count INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS preference_learning_run_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL REFERENCES preference_learning_runs(id),
+                job_id INTEGER NOT NULL,
+                category TEXT NOT NULL,
+                message_excerpt TEXT NOT NULL DEFAULT ''
+            )
+        """)
 
         # Migration: followed_companies added after users existed - CREATE TABLE above only
         # covers fresh DBs.
@@ -295,6 +342,16 @@ def init_db():
                 conn.execute(f"ALTER TABLE chat_messages ADD COLUMN {column} {coltype}")
             except sqlite3.OperationalError:
                 pass  # already migrated
+
+        # Migration: chat_messages gained preference_checked_at for the Preference learning
+        # tool (src/learning.py) - marks a feedback message as already considered (live, via
+        # the per-turn hook, or via a bulk run) so a repeat bulk run only ever processes
+        # feedback that arrived since. NULL on every pre-existing row on purpose: the first
+        # bulk run backfills from full history.
+        try:
+            conn.execute("ALTER TABLE chat_messages ADD COLUMN preference_checked_at TEXT")
+        except sqlite3.OperationalError:
+            pass  # already migrated
 
         # Backfill: chat_messages rows created before artifact_text existed are still NULL.
         # Only the LATEST assistant message in a cover_letter/resume thread can be recovered
@@ -647,6 +704,19 @@ def get_preceding_chat_message(session_id, before_id, role):
             f"SELECT {_CHAT_MESSAGE_COLUMNS} FROM chat_messages "
             "WHERE session_id = ? AND role = ? AND id < ? ORDER BY id DESC LIMIT 1",
             (session_id, role, before_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_following_chat_message(session_id, after_id, role):
+    """The earliest message strictly after after_id in this pane's thread with the given
+    role - the mirror of get_preceding_chat_message, used to find a user message's own
+    resulting assistant reply (see store.get_artifact_text_after)."""
+    with db_transaction() as conn:
+        row = conn.execute(
+            f"SELECT {_CHAT_MESSAGE_COLUMNS} FROM chat_messages "
+            "WHERE session_id = ? AND role = ? AND id > ? ORDER BY id ASC LIMIT 1",
+            (session_id, role, after_id),
         ).fetchone()
     return dict(row) if row else None
 
@@ -1051,6 +1121,158 @@ def fetch_recent_run_results(limit=200):
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---- fit scoring (see src/scanner.py) --------------------------------------
+
+def insert_scoring_run(started_at, mode, model):
+    with db_transaction() as conn:
+        cur = conn.execute(
+            "INSERT INTO scoring_runs (started_at, mode, model) VALUES (?, ?, ?)",
+            (started_at, mode, model),
+        )
+        return cur.lastrowid
+
+
+def finish_scoring_run(run_id, finished_at, status, scored_count, error_message=None):
+    with db_transaction() as conn:
+        conn.execute(
+            "UPDATE scoring_runs SET finished_at = ?, status = ?, scored_count = ?, error_message = ? WHERE id = ?",
+            (finished_at, status, scored_count, error_message, run_id),
+        )
+
+
+def insert_scoring_result(run_id, job_id, score, summary):
+    with db_transaction() as conn:
+        conn.execute(
+            "INSERT INTO scoring_run_results (run_id, job_id, score, summary) VALUES (?, ?, ?, ?)",
+            (run_id, job_id, score, summary),
+        )
+
+
+def fetch_scoring_runs(limit=20):
+    """Most recent runs first, across every mode - one flat log, no per-component split
+    (there's only ever one scorer, unlike src/components/)."""
+    with db_transaction() as conn:
+        rows = conn.execute("SELECT * FROM scoring_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_scoring_run(run_id):
+    with db_transaction() as conn:
+        row = conn.execute("SELECT * FROM scoring_runs WHERE id = ?", (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def fetch_scoring_run_results(run_id):
+    """This run's per-job scores, highest first, joined with title/company for display."""
+    with db_transaction() as conn:
+        rows = conn.execute(
+            """SELECT res.*, jobs.title, jobs.company FROM scoring_run_results res
+               JOIN jobs ON jobs.id = res.job_id
+               WHERE res.run_id = ? ORDER BY res.score DESC""",
+            (run_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---- preference learning (see src/learning.py) -----------------------------
+
+def insert_preference_learning_run(started_at, scope_job_id, mode, model):
+    with db_transaction() as conn:
+        cur = conn.execute(
+            "INSERT INTO preference_learning_runs (started_at, scope_job_id, mode, model) "
+            "VALUES (?, ?, ?, ?)",
+            (started_at, scope_job_id, mode, model),
+        )
+        return cur.lastrowid
+
+
+def finish_preference_learning_run(run_id, finished_at, status, processed_count, updated_count, error_message=None):
+    with db_transaction() as conn:
+        conn.execute(
+            "UPDATE preference_learning_runs SET finished_at = ?, status = ?, processed_count = ?, "
+            "updated_count = ?, error_message = ? WHERE id = ?",
+            (finished_at, status, processed_count, updated_count, error_message, run_id),
+        )
+
+
+def fetch_preference_learning_runs(limit=20):
+    with db_transaction() as conn:
+        rows = conn.execute(
+            "SELECT * FROM preference_learning_runs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_preference_learning_run(run_id):
+    with db_transaction() as conn:
+        row = conn.execute("SELECT * FROM preference_learning_runs WHERE id = ?", (run_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def insert_preference_learning_result(run_id, job_id, category, message_excerpt):
+    with db_transaction() as conn:
+        conn.execute(
+            "INSERT INTO preference_learning_run_results (run_id, job_id, category, message_excerpt) "
+            "VALUES (?, ?, ?, ?)",
+            (run_id, job_id, category, message_excerpt),
+        )
+
+
+def fetch_preference_learning_run_results(run_id):
+    """This run's applied/would-apply revisions, joined with title/company for display."""
+    with db_transaction() as conn:
+        rows = conn.execute(
+            """SELECT res.*, jobs.title, jobs.company FROM preference_learning_run_results res
+               JOIN jobs ON jobs.id = res.job_id
+               WHERE res.run_id = ? ORDER BY res.id""",
+            (run_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_unchecked_feedback_messages(scope_job_id=None):
+    """User feedback messages (cover_letter/resume/qa) not yet run through preference
+    learning - live or in a prior bulk run - oldest first. Global id order is chronological
+    order across every session, so a cumulative replay sees feedback in the order it was
+    actually given."""
+    query = (
+        "SELECT id, session_id, job_id, type, content FROM chat_messages "
+        "WHERE role = 'user' AND preference_checked_at IS NULL "
+        "AND type IN ('cover_letter', 'resume', 'qa')"
+    )
+    params = []
+    if scope_job_id is not None:
+        query += " AND job_id = ?"
+        params.append(scope_job_id)
+    query += " ORDER BY id"
+    with db_transaction() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_message_preference_checked(message_id, checked_at):
+    with db_transaction() as conn:
+        conn.execute(
+            "UPDATE chat_messages SET preference_checked_at = ? WHERE id = ?", (checked_at, message_id)
+        )
+
+
+def fetch_latest_scores():
+    """{job_id: {score, summary}} from the most recently completed live-mode run - what the
+    dashboard shows. Test runs never touch this; a failed live run (status != 'ok') doesn't
+    either, so a partial failure never overwrites the last good set of scores."""
+    with db_transaction() as conn:
+        run = conn.execute(
+            "SELECT id FROM scoring_runs WHERE mode = 'live' AND status = 'ok' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if not run:
+            return {}
+        rows = conn.execute(
+            "SELECT job_id, score, summary FROM scoring_run_results WHERE run_id = ?", (run["id"],)
+        ).fetchall()
+    return {r["job_id"]: {"score": r["score"], "summary": r["summary"]} for r in rows}
 
 
 init_db()

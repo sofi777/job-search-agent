@@ -2,7 +2,7 @@
 
 A proof-of-concept web app: upload your resume, tell it your preferences, and get a ranked,
 personal job board. Tailor each application (cover letter, resume, Q&A answers) via a
-per-job chat, with placeholder AI for suggestions and match scoring.
+per-job chat, with placeholder AI for suggestions and real LLM-based match scoring.
 
 ## Run tests
 
@@ -39,11 +39,11 @@ webapp/
                          #   Creates tables on import, parameterized queries, one
                          #   transaction per write
     store.py           # in-memory view backed by db.py: user profile, jobs
-                         #   (from the DB, this user's progress merged in),
-                         #   priority weights
-    ai.py               # placeholder AI: role/location suggestions, match scoring
-                         #   (swap these for real LLM calls later without touching
-                         #   callers); extract_job_posting() is real, via agents.py
+                         #   (from the DB, this user's progress and latest fit
+                         #   score merged in)
+    ai.py               # suggest_roles/suggest_home_address are placeholders;
+                         #   score_job() and extract_job_posting() are real LLM
+                         #   calls, via agents.py
     agents.py            # OpenRouter transport (send_message/send_chat) plus the
                          #   tailoring chat + cross-job preference learning
                          #   (run_tailor_turn, revise_preferences) - see AI below
@@ -53,8 +53,13 @@ webapp/
                          #   resume/cover-letter-sample/story-bank/chat-attachment uploads
     rag.py               # chunking + sentence-transformers embeddings + Chroma retrieval
                          #   for the tailoring knowledge base (documents only) - see AI below
-    scanner.py          # run_scan(): re-scores jobs against the profile; called
-                         #   on-demand today, wire to a scheduler later unchanged
+    scanner.py          # run_scan(mode, model): fit-scores jobs against the
+                         #   profile's resume/story bank/industries/free text;
+                         #   called on-demand today, wire to a scheduler later
+                         #   unchanged - every call logs a scoring_runs row
+    learning.py          # run_learning(scope, mode, model): on-demand replay of
+                         #   unchecked tailoring-chat feedback through the same
+                         #   preference-learning check the live chat makes per turn
   scripts/
     test_agents.py       # quick manual check: calls agents.send_message and prints
   data/
@@ -110,10 +115,12 @@ webapp/
   behavior as onboarding); cover letter sample and story bank can also be removed
   outright with no replacement. Re-uploading the resume asks whether to keep the
   current roles/home address or regenerate them from the new resume.
-- **Editable ranking**: the weights behind the match score (role/location/salary/
-  industry fit) are visible and editable at `/priority`
-- **On-demand scan**: "Run scan now" re-scores all jobs against the current profile
-  and weights. Daily automation is intentionally not wired up yet (see below).
+- **On-demand scan**: "Run scan now" on the dashboard fit-scores every job against the
+  current profile (resume/story bank skill fit + industries/free-text alignment - role/
+  title, location, remoteness, and salary are already hard-filtered before a job reaches
+  the dashboard, so scoring never re-checks them). Daily automation is intentionally not
+  wired up yet (see below). Model choice, test-mode dry runs, and the full run log live
+  at the Score fit tool page (`/tools/score_fit`, see below).
 - **Add Job Posting**: paste a URL on the dashboard and the app fetches the page and
   uses an LLM (via `src/agents.py`) to fill in company, title, location, salary, and
   a description. Added with no match score ("Not yet ranked") until the next scan.
@@ -146,11 +153,10 @@ webapp/
   job-scan agent (Gmail, SerpAPI, ATS boards, RemoteOK feeding a LangGraph agent
   that filters, extracts, scores, saves, and updates applied status). SerpAPI,
   RemoteOK, and ATS boards are live and link to a real settings + run + results page
-  (`src/components/`, see below); of the Tools cards, Filter & dedupe and Save to
-  database are live (wired into every component run, see below); Extract & structure
-  and Update applied status stay Pending until a raw-text source (Gmail) exists, and
-  Score fit stays Pending until job-detail extraction is built. The rest are still
-  just cards.
+  (`src/components/`, see below); of the Tools cards, Filter, dedupe & save (wired into
+  every component run), Score fit, Tailored generation, and Preference learning are
+  live; Extract & structure and Update applied status stay Pending until a raw-text
+  source (Gmail) exists.
 - **Sourcing components** (`src/components/`, linked from System Components):
   SerpAPI (Google Jobs), RemoteOK, and ATS boards (Lever/Greenhouse/Ashby/Workable)
   each get their own page to configure search criteria (seeded from your profile,
@@ -169,28 +175,48 @@ webapp/
   separate settings screen for this: it reads your profile live, so editing it on
   `/profile` is how you change what gets filtered. The run summary and run history on
   each component's page show how many were filtered and why. Soft preferences
-  (industries, free text) aren't applied here - that's `src/scanner.py`'s `run_scan()`,
-  a separate step that scores jobs already saved to the dashboard.
+  (resume/story-bank skill fit, industries, free text) aren't applied here - that's the
+  Score fit tool (`src/scanner.py`'s `run_scan()`), a separate step that scores jobs
+  already saved to the dashboard.
+- **Score fit** (`/tools/score_fit`): LLM scoring of every job on the dashboard against
+  your resume, story bank, and stated industries/free-text preferences (`ai.score_job`,
+  one call per job). A settings form picks the model (any of `agents.MODEL_OPTIONS`) and
+  test vs live mode; both make real LLM calls (test mode is a genuine dry run, not a
+  fixture, so it actually validates the prompt/parsing), but test mode always forces the
+  free default model regardless of what's picked and never touches the dashboard. "Run"
+  scores every job and, in live mode, updates the dashboard's match % + summary
+  immediately. Every run - however triggered,
+  including the dashboard's own "Run scan now" - is logged with its mode, model, job
+  count, and any error, and this run's own results table (score + why, per job) plus the
+  full run history are both shown on this page.
 - **Tool admin pages** (`/tools/<id>`, linked from every card in System Components'
-  Tools section, `src/tools.py` registry): what that tool does, and for the two live
-  ones, its current live state. Filter & dedupe shows the hard-preference values it's
+  Tools section, `src/tools.py` registry): what that tool does, and for the live ones,
+  its current live state. Filter, dedupe & save shows the hard-preference values it's
   reading right now plus a combined log of every source run's filter/dedup outcome
-  across all components, split into Test/Live tabs. Save to database shows every job
-  added via a sourcing component, tagged with whether it came from a test or live run.
-  The three pending tools just explain what's blocking them.
+  across all components, split into Test/Live tabs, staged results awaiting "Add to
+  dashboard", and the saved-jobs log. Score fit is described above. Tailored
+  generation is a job picker that opens that job's existing `/jobs/<id>/tailor` page
+  (no new generation logic - see Tailoring chat below). Preference learning has its
+  own Run: pick a job or "All jobs", a model, and test/live mode, then it replays
+  tailoring-chat feedback that hasn't been checked yet through the same reveals-a-
+  preference judgment the tailoring chat already makes automatically per turn (see
+  Preference learning below) - test mode previews what it would learn without touching
+  `/preferences`; live mode applies it and marks that feedback checked, so a repeat run
+  only ever looks at what's new. Below the run log, each category's current learned
+  text and when it last changed is still shown read-only, with a link to `/preferences`
+  to edit directly. The two pending tools just explain what's blocking them.
 
 ## What's a placeholder (by design)
 
-`suggest_roles`, `suggest_home_address`, and `score_job` in `src/ai.py` are still
-generic, deterministic stand-ins, not real LLM calls. Each function's docstring says
-what a real implementation should do; swapping the body for a real model call
-requires no changes to any caller. `ai.extract_job_posting()` and the tailoring chat
+`suggest_roles` and `suggest_home_address` in `src/ai.py` are still generic,
+deterministic stand-ins, not real LLM calls. Each function's docstring says what a real
+implementation should do; swapping the body for a real model call requires no changes to
+any caller. `ai.score_job()`, `ai.extract_job_posting()`, and the tailoring chat
 (`src/agents.py`) are real LLM calls.
 
-Similarly, `src/scanner.run_scan()` is the single entry point for refreshing job
-matches. It runs on-demand only for now; daily automation (cron, APScheduler, a
-GitHub Action, etc.) can call this same function on a timer without any other
-changes.
+`src/scanner.run_scan()` is the single entry point for refreshing job matches. It runs
+on-demand only for now; daily automation (cron, APScheduler, a GitHub Action, etc.) can
+call this same function on a timer without any other changes.
 
 ## AI (OpenRouter)
 
@@ -261,7 +287,19 @@ auto-update. Runs on whichever model the user picked for the main generation (no
 fixed model) - so preference-learning never adds a paid call the user didn't choose;
 staying on free models keeps this free too. Skipped entirely on the first message for
 a tab (nothing to give feedback on yet) or when `classify_turn()` (see below) says
-this message doesn't look like it reveals a preference.
+this message doesn't look like it reveals a preference. Every feedback message this
+runs on gets marked checked (`chat_messages.preference_checked_at`) right after, live
+or not - see `src/learning.py` below for the on-demand version of this same check.
+
+**Preference learning, on demand** (`src/learning.py`, `/tools/preference_learning`):
+the live check above only ever sees a turn as it happens. `run_learning()` replays
+whatever feedback hasn't been checked yet - across every job, or one - through the
+exact same `classify_turn`/`revise_preferences` judgment, for backfilling older chats
+or catching anything the live hook missed. Incremental: a message is marked checked
+the moment it's looked at (live or here), so re-running only ever processes what's
+new. Test mode previews for real (genuine LLM calls, logged to
+`preference_learning_run_results`) without touching `/preferences` or marking
+anything checked; live mode does both.
 
 **Cost-saving on regenerate turns**: iterating on a draft ("make it shorter",
 "regenerate") is the most common action in this app, so a few things are skipped

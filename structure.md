@@ -20,12 +20,14 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   SQL or the filesystem directly.
 - **`src/db.py`** - SQLite persistence, the only module that touches `sqlite3`.
   Creates tables on import, parameterized queries, one transaction per write.
-- **`src/store.py`** - in-memory view backed by `db.py`: user profile, jobs (DB rows
-  + this user's progress merged in), priority weights. Every mutation goes through a
-  `save_*()`/`update_*()` call here. Also owns the flat-file logs
-  (`data/results.json` for ratings) that don't need a full table.
-- **`src/ai.py`** - placeholder AI (role/location suggestions, match scoring) plus
-  `extract_job_posting()`, a real LLM call via `src/agents.py`.
+- **`src/store.py`** - in-memory view backed by `db.py`: user profile, jobs (DB rows +
+  this user's progress and latest fit score merged in - see `reload_jobs()`), priority
+  weights (unused since fit scoring went LLM-based, see `src/scanner.py` - kept as dead
+  data, not wired to anything). Every mutation goes through a `save_*()`/`update_*()`
+  call here. Also owns the flat-file logs (`data/results.json` for ratings) that don't
+  need a full table.
+- **`src/ai.py`** - `suggest_roles`/`suggest_home_address` are placeholders. `score_job()`
+  and `extract_job_posting()` are real LLM calls via `src/agents.py`.
 - **`src/agents.py`** - the one module that talks to an LLM (OpenRouter transport:
   `send_message`/`send_chat`), plus the tailoring chat + cross-job preference
   learning (`run_tailor_turn`, `revise_preferences`). Every real LLM call in the app
@@ -35,8 +37,19 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
 - **`src/files.py`** - `extract_text()`: .pdf/.docx/.txt/.md -> plain text.
 - **`src/rag.py`** - chunking + sentence-transformers embeddings + Chroma retrieval
   for the tailoring knowledge base.
-- **`src/scanner.py`** - `run_scan()`: re-scores jobs already in the DB against the
-  profile (soft signals: industries, free text). Separate from and later than filtering.
+- **`src/scanner.py`** - `run_scan(mode, model)`: the single entry point for fit-scoring
+  jobs already in the DB (soft signals only - resume/story-bank skill fit and
+  industries/free-text alignment via `ai.score_job`; role/title, location, remoteness,
+  salary are already hard-filtered before a job reaches the jobs table, see
+  `src/filters.py`, so scoring never re-checks them). Called from onboarding completion,
+  the dashboard's "Run scan" button, data reload (all via the `mode="live"` default), and
+  the Score fit tool page (`/tools/score_fit`, explicit mode/model from the run form).
+  Every call logs a `scoring_runs` row regardless of caller, and never raises - a failure
+  mid-run is recorded on the run (status `"error"`) and returned via the run id, not
+  thrown. `mode="test"` still makes a real LLM call per job (not a fixture, unlike
+  `src/components/`'s test mode - a fake score wouldn't exercise the prompt/parsing path)
+  but forces the model to `agents.DEFAULT_MODEL` (free) regardless of what's requested,
+  and never touches the dashboard.
 - **`src/filters.py`** - `filter_and_dedupe()`: hard-preference gate (role/title,
   location, remoteness, work eligibility, salary floor - all read live from the profile,
   no separate override copy) + dedup (within a fetch batch, against the jobs table, and
@@ -46,11 +59,34 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   dropped. No scoring here - that's `scanner.py`'s job, runs later, only after a job is
   actually saved.
 - **`src/tools.py`** - `TOOLS` registry (name/description/status/blocked_reason) for the
-  four "Tools" cards on `/components` and their `/tools/<id>` admin pages (see
-  `templates/tool_detail.html`, `app.py`'s `tool_detail()`). Display metadata only - the
-  one live tool's actual data (`filter_dedupe` - active profile values, combined run log,
-  staged-for-review results, added-jobs log; merged with the old separate "save to
-  database" tool, see `webapp/` section) is assembled in `app.py`, not here.
+  six "Tools" cards on `/components` and their `/tools/<id>` admin pages (see
+  `templates/tool_detail.html`, `app.py`'s `tool_detail()`). Display metadata only - each
+  live tool's actual data is assembled in `app.py`, not here: `filter_dedupe` (active
+  profile values, combined run log, staged-for-review results, added-jobs log; merged
+  with the old separate "save to database" tool, see `webapp/` section), `score_fit`
+  (model + mode picker, latest run summary/results, full run history - backed by
+  `scoring_runs`/`scoring_run_results`, see `src/db.py` and `src/scanner.py`),
+  `tailored_generation` (job picker -> opens that job's existing `/jobs/<id>/tailor`
+  page - no new generation logic, just a dashboard-wide entry point into
+  `agents.run_tailor_turn`), and `preference_learning` (own Run form - scope/model/mode -
+  plus run log/results, backed by `src/learning.py`; see below).
+- **`src/learning.py`** - `run_learning(scope_job_id, mode, model)`: an explicit, on-demand
+  version of the preference learning `app.py`'s `_run_pane_turn` already does live per
+  turn - walks tailoring-chat feedback messages not yet checked (`chat_messages.role =
+  'user'` with `preference_checked_at IS NULL` - see `src/db.py` migration), across every
+  job or scoped to one, and for each: gates on whether there was already a draft to react
+  to (`store.get_artifact_text_before`, mirrors the live pre-turn `current_text` check),
+  then `agents.classify_turn` + `agents.revise_preferences` against the resulting draft
+  (`store.get_artifact_text_after` - the post-turn artifact, same as what the live hook
+  actually passes, not the pre-turn one). `mode="test"` makes real LLM calls and logs a
+  preview to `preference_learning_run_results`, but never calls `store.save_preference`
+  and never marks a message checked, so it's safely repeatable. `mode="live"` does both -
+  every message it looked at gets marked checked (whether or not it changed anything), so
+  a repeat run only ever processes feedback that arrived since - same incremental contract
+  the live per-turn hook already keeps (it marks its own message checked too, right after
+  its `check_preferences` block - see `_run_pane_turn`). Run log: `preference_learning_runs`
+  / `preference_learning_run_results` (`src/db.py`), same shape as `scoring_runs` /
+  `scoring_run_results`.
 - **`scripts/`** - quick manual scripts (`test_agents.py`, `show_last_call.py`).
 - **`templates/`** - Jinja2 HTML, all extending `base.html`. Pages with file uploads
   (`onboarding_resume.html`, `profile.html`) mark their `<form>` `data-upload-form` and
@@ -66,7 +102,8 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
 - **`data/`** - all app data, mostly gitignored (see `.gitignore` for what's sample
   vs. user data):
   - `app.db` - SQLite: user profile, jobs, per-job progress, chat_sessions (compare
-    panes), chat, artifacts, preferences, documents, chunks, citations, settings.
+    panes), chat, artifacts, preferences, documents, chunks, citations, settings,
+    scoring_runs/scoring_run_results (fit-scoring run log, see `src/scanner.py`).
   - `jobs.json` - sample job catalog, seeds `app.db` on first run.
   - `chroma/` - vector store for RAG chunk embeddings.
   - `uploads/` - uploaded resume files.
@@ -83,7 +120,7 @@ button; `POST /jobs/<id>/tailor/<tab>/session/<session_id>/message` sends to one
 pane only, `POST /jobs/<id>/tailor/<tab>/sessions` adds a pane, `POST
 /jobs/<id>/tailor/<tab>/session/<session_id>/remove` hides one - its history can be
 resurfaced by re-adding the same model). Settings pages:
-`/profile`, `/preferences`, `/priority`, `/chunks`, `/results`,
+`/profile`, `/preferences`, `/chunks`, `/results`,
 `/usage`. Rating a response: `POST /messages/<id>/rate`.
 
 `/components` (`templates/components.html`, linked from the Admin menu as "System
@@ -140,7 +177,12 @@ staged results not yet on the dashboard, each with "Add to dashboard"
 (`store.get_staged_results_for_review` - every `component_run_results` row whose url isn't
 already in `jobs`); and the saved-jobs log, tagged with the mode of the run that staged it
 (`store.get_run_modes_for_urls`). The three pending tools just show their
-`blocked_reason`.
+`blocked_reason`. `tailored_generation` shows a job `<select>` + Open button that
+navigates to `/jobs/<id>/tailor` (JS-built URL, no new route). `preference_learning` has
+its own Run form (scope job or "All jobs", model, test/live mode -> `POST
+/tools/preference_learning/run` -> `src/learning.run_learning`), this run's
+summary/revised-preferences table, full run history, and - unchanged - each preference
+category's current text/last-updated (`store.get_preferences_full`) below that.
 
 `webapp/tests/` - stdlib `unittest`, one file per `src/components/` module, all network
 calls mocked (`unittest.mock.patch` on `base.fetch_json`/`urlopen`). Run via `python -m

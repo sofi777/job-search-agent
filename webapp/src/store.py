@@ -135,14 +135,18 @@ def reload_jobs():
 
     db.ensure_progress_rows(user_id, [j["id"] for j in catalog])
     progress = db.fetch_progress(user_id)
+    scores = db.fetch_latest_scores()
 
     merged = []
     for job in catalog:
         p = progress.get(job["id"], {})
+        s = scores.get(job["id"])
         merged.append({
             **job,
             "status": p.get("status", "new"),
             "comments": p.get("comments", ""),
+            "match": s["score"] if s else None,
+            "match_summary": s["summary"] if s else "",
         })
     jobs = merged
     return jobs
@@ -601,6 +605,95 @@ def add_run_result_to_dashboard(result_id, component_id):
     job_id = db.insert_job(fields)
     reload_jobs()
     return job_id
+
+
+# ---- fit scoring (see src/scanner.py) --------------------------------------
+
+def start_scoring_run(mode, model):
+    return db.insert_scoring_run(_now(), mode, model)
+
+
+def finish_scoring_run(run_id, status, scored_count, error_message=None):
+    db.finish_scoring_run(run_id, _now(), status, scored_count, error_message)
+
+
+def save_scoring_result(run_id, job_id, score, summary):
+    db.insert_scoring_result(run_id, job_id, score, summary)
+
+
+def get_scoring_runs():
+    return db.fetch_scoring_runs()
+
+
+def get_scoring_run(run_id):
+    return db.fetch_scoring_run(run_id)
+
+
+def get_latest_scoring_run():
+    runs = db.fetch_scoring_runs(limit=1)
+    return runs[0] if runs else None
+
+
+def get_scoring_run_results(run_id):
+    return db.fetch_scoring_run_results(run_id)
+
+
+# ---- preference learning (see src/learning.py) -----------------------------
+
+def start_preference_learning_run(scope_job_id, mode, model):
+    return db.insert_preference_learning_run(_now(), scope_job_id, mode, model)
+
+
+def finish_preference_learning_run(run_id, status, processed_count, updated_count, error_message=None):
+    db.finish_preference_learning_run(run_id, _now(), status, processed_count, updated_count, error_message)
+
+
+def get_unchecked_feedback_messages(scope_job_id=None):
+    return db.fetch_unchecked_feedback_messages(scope_job_id)
+
+
+def get_artifact_text_before(session_id, message_id):
+    """The artifact/answer text as it stood right before message_id was sent - i.e. whether
+    there was already something to react to. None if this was the first message in the
+    session. Mirrors the pre-turn `current_text` gate in app.py's _run_pane_turn (used there
+    to decide whether classify_turn/revise_preferences run at all)."""
+    preceding = db.get_preceding_chat_message(session_id, message_id, "assistant")
+    return preceding["artifact_text"] if preceding else None
+
+
+def get_artifact_text_after(session_id, message_id):
+    """The artifact/answer text that resulted from message_id's own turn - i.e. what the
+    feedback actually produced. None if this message's turn never got a resolving assistant
+    reply (a crashed/incomplete turn). Mirrors the post-turn `artifact_text` app.py's
+    _run_pane_turn actually passes to revise_preferences (the result, not the stale draft
+    the feedback was reacting to)."""
+    following = db.get_following_chat_message(session_id, message_id, "assistant")
+    return following["artifact_text"] if following else None
+
+
+def mark_message_preference_checked(message_id):
+    db.set_message_preference_checked(message_id, _now())
+
+
+def save_preference_learning_result(run_id, job_id, category, message_excerpt):
+    db.insert_preference_learning_result(run_id, job_id, category, message_excerpt)
+
+
+def get_preference_learning_runs():
+    return db.fetch_preference_learning_runs()
+
+
+def get_preference_learning_run(run_id):
+    return db.fetch_preference_learning_run(run_id)
+
+
+def get_latest_preference_learning_run():
+    runs = db.fetch_preference_learning_runs(limit=1)
+    return runs[0] if runs else None
+
+
+def get_preference_learning_run_results(run_id):
+    return db.fetch_preference_learning_run_results(run_id)
 
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)

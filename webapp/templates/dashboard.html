@@ -114,7 +114,7 @@
           <td style="white-space:nowrap;">{{ job.posted }}</td>
           <td style="white-space:nowrap;">
             {% if job.match is defined and job.match is not none %}
-            <span class="tag {{ 'tag-outline' if job.match >= 85 else 'tag-neutral' }}">{{ job.match }}% match</span>
+            <span class="tag {{ 'tag-outline' if job.match >= 85 else 'tag-neutral' }}" title="{{ job.match_summary }}">{{ job.match }}% match</span>
             {% else %}
             <span class="tag tag-neutral">Not yet ranked</span>
             {% endif %}

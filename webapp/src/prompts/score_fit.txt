@@ -1,0 +1,20 @@
+You are scoring how well a job fits a candidate, on exactly two things: (1) whether the job's requirements match what's on the candidate's resume and story bank, and (2) whether the job/company aligns with what the candidate says they care about. Ignore role title, location, remoteness, and salary - those are already filtered out separately before this job reached you, so re-judging them would be redundant.
+
+Job title: {title}
+Job description: {description}
+
+Candidate resume:
+{resume_text}
+
+Candidate story bank (achievements/examples, may be "(none provided)"):
+{story_bank_text}
+
+Candidate's stated industries of interest: {industries}
+Candidate's own words on what they care about: {industries_text}
+
+Score 0-100 how well this job fits the candidate on those two dimensions combined. Reply with ONLY a JSON object, no markdown fences, no commentary, with exactly these keys:
+"score": integer 0-100
+"summary": one or two plain-text sentences explaining the score - what matches, what doesn't
+
+Respond with exactly this JSON shape, nothing before or after it (illustrative values only):
+{{"score": 72, "summary": "Strong overlap with the resume's cloud migration and platform work; the free-text preference for mission-driven work isn't clearly reflected in this ad-tech company's description."}}

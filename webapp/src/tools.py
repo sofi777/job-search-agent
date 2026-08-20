@@ -1,11 +1,12 @@
 """Registry for the "Tools" cards on /components (templates/components.html) and their
 admin pages (templates/tool_detail.html, app.py's tool_detail() route).
 
-Unlike src/components/, these aren't independent fetchers with their own run() - they're
-either a step in the sourcing pipeline (filter_dedupe -> src/filters.py, applied via
-store.apply_run_filters - a separate stage a component's own run() never triggers, run
-explicitly per run once it's fetched) or an existing flow, so this is just display
-metadata; app.py assembles each page's live data itself.
+Unlike src/components/, these aren't independent fetchers - they're a step in the sourcing
+pipeline (filter_dedupe -> src/filters.py, applied via store.apply_run_filters - a separate
+stage a component's own run() never triggers, run explicitly per run once it's fetched), a
+scorer (score_fit -> src/scanner.run_scan, its own run/mode/model form + log on this same
+page, see app.py's score_fit_run()), or an existing flow - so this is just display metadata;
+app.py assembles each page's live data itself.
 
 filter_dedupe and the old separate "save to database" tool are one merged tool now -
 filtering a run and then adding what survives to the dashboard are two steps of the same
@@ -32,13 +33,10 @@ TOOLS = {
     },
     "score_fit": {
         "name": "Score fit",
-        "description": "LLM scoring against the profile's soft preferences (industries, "
-                        "free text).",
-        "status": "pending",
-        "blocked_reason": "Needs richer per-job context extraction first, not yet built. "
-                           "Today, src/scanner.py's run_scan() does a placeholder "
-                           "keyword/number score against jobs already on the dashboard - "
-                           "see /dashboard's \"Run scan\".",
+        "description": "LLM scoring of resume/story-bank skill fit and industries/free-text "
+                        "alignment against jobs already on the dashboard - see src/scanner.py, "
+                        "src/ai.score_job.",
+        "status": "live",
     },
     "update_applied_status": {
         "name": "Update applied status",
@@ -46,5 +44,21 @@ TOOLS = {
                         "Applied, or insert a new row.",
         "status": "pending",
         "blocked_reason": "Needs the Gmail connector (not built) to read confirmation emails.",
+    },
+    "tailored_generation": {
+        "name": "Tailored generation",
+        "description": "Cover letter, resume, and Q&A drafting for one job, grounded in the "
+                        "profile/resume/story bank via retrieval - see src/agents.run_tailor_turn. "
+                        "One tool: all three are tabs of the same chat, picked per job below.",
+        "status": "live",
+    },
+    "preference_learning": {
+        "name": "Preference learning",
+        "description": "Reads feedback given in a tailoring chat and decides whether it reveals "
+                        "a durable writing-style preference (general, or specific to cover "
+                        "letter/resume/Q&A) - see src/agents.revise_preferences. Runs "
+                        "automatically after a tailoring turn; edit or clear what it's learned "
+                        "on /preferences.",
+        "status": "live",
     },
 }

@@ -1,13 +1,12 @@
 """AI-shaped functions: some placeholders, some real.
 
-suggest_roles, suggest_home_address and score_job don't call a real model
-yet. Each returns a generic, deterministic hint derived from simple
-string/number rules. Every function's signature (what it takes, what it
-returns) is the contract a real LLM-backed implementation should keep, so
-swapping the body later is a drop-in change with no caller updates.
+suggest_roles and suggest_home_address don't call a real model yet - each
+returns a generic, deterministic hint. Their signatures are the contract a
+real LLM-backed implementation should keep, so swapping the body later is a
+drop-in change with no caller updates.
 
-extract_job_posting calls agents.send_message. Cover letter / resume /
-Q&A generation lives in the tailoring chat (see src/agents.py
+score_job and extract_job_posting call agents.send_message. Cover letter /
+resume / Q&A generation lives in the tailoring chat (see src/agents.py
 run_tailor_turn), not here - those are conversational and job-scoped, not
 one-shot calls.
 """
@@ -16,10 +15,12 @@ import re
 import urllib.error
 import urllib.request
 from datetime import date
+from pathlib import Path
 
 from . import agents
 
 GENERIC_ROLE_SUGGESTIONS = ["Senior Product Manager", "Product Lead", "Group Product Manager"]
+PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 
 def suggest_roles(resume_filename):
@@ -40,44 +41,34 @@ def suggest_home_address(resume_filename):
     return "San Francisco, CA"
 
 
-def score_job(job, profile, weights):
-    """Score how well a job fits the profile, 0-100.
+def score_job(job, resume_text, story_bank_text, industries, industries_text, model=agents.DEFAULT_MODEL):
+    """Score how well a job fits the candidate, 0-100, on the two things that can't be
+    checked deterministically: does the job's ask match what's on the resume/story bank,
+    and does it align with the industries/free-text preferences. Role/title, location,
+    remoteness and salary are already hard-filtered before a job reaches here (see
+    src/filters.py) - this never re-checks them.
 
-    Placeholder: cheap keyword/number overlap, weighted by `weights`.
-    Real version: send job + profile to an LLM and parse a fit score.
+    Real LLM call via agents.send_message. Raises RuntimeError if the reply isn't usable
+    (propagated from agents.send_chat) or isn't valid JSON.
     """
-    text = f"{job['title']} {job['description']}".lower()
+    prompt = (PROMPTS_DIR / "score_fit.txt").read_text().format(
+        title=job["title"],
+        description=job.get("description") or "(no description)",
+        resume_text=resume_text,
+        story_bank_text=story_bank_text or "(none provided)",
+        industries=", ".join(industries) or "(none specified)",
+        industries_text=industries_text or "(none provided)",
+    )
+    reply, _used_model, _usage = agents.send_message(prompt, model)
+    try:
+        data = json.loads(agents.strip_json_fence(reply))
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Could not parse a fit score from the model's reply: {reply[:200]}") from e
 
-    role_score = 100 if any(role.lower() in text for role in profile["roles"]) else 40
-
-    if job.get("remote") and profile.get("remote_ok"):
-        location_score = 100
-    elif profile.get("home_address", "").split(",")[0].lower() in job.get("location", "").lower():
-        location_score = 90
-    else:
-        location_score = 30
-
-    job_min, job_max = job.get("salary_min", 0), job.get("salary_max", 0)
-    min_salary = profile.get("min_salary", 0)
-    if job_max and job_max >= min_salary:
-        salary_score = 100
-    elif job_min and job_min >= min_salary * 0.85:
-        salary_score = 60
-    else:
-        salary_score = 20
-
-    industries = [i.lower() for i in profile.get("industries", [])]
-    industry_score = 100 if (not industries or any(i in text for i in industries)) else 50
-
-    total_weight = sum(weights.values()) or 1
-    weighted = (
-        role_score * weights.get("role_match", 0)
-        + location_score * weights.get("location_fit", 0)
-        + salary_score * weights.get("salary_fit", 0)
-        + industry_score * weights.get("industry_fit", 0)
-    ) / total_weight
-
-    return round(weighted)
+    return {
+        "score": max(0, min(100, int(data.get("score", 0)))),
+        "summary": str(data.get("summary") or ""),
+    }
 
 
 _BROWSER_HEADERS = {

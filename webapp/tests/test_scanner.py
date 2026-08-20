@@ -1,28 +1,132 @@
-"""src/scanner.py run_scan() - re-scores store.jobs in place against store.profile/priority_weights."""
+"""src/scanner.py run_scan() - single entry point for fit-scoring store.jobs. Both modes
+call ai.score_job for real (mocked out here - never hits the network); "test" forces the
+model to agents.DEFAULT_MODEL (free) regardless of what's passed and never touches the
+dashboard, "live" uses whatever model is given and does."""
 import unittest
+from unittest import mock
 
 from tests import db_setup  # noqa: F401  (side effect: redirects DB_PATH before store import)
-from src import scanner, store
+from src import agents, db, scanner, store
+
+
+def _delete_profile_document(doc_type):
+    # Bypasses store.delete_profile_document/rag on purpose - scoring only ever reads
+    # documents.content (store.get_profile_documents), never chunks/embeddings, so tests
+    # skip the (slow, model-loading) rag path entirely to stay fast.
+    existing = next((d for d in db.fetch_profile_documents(store.user_id) if d["type"] == doc_type), None)
+    if existing:
+        db.delete_document(existing["id"])
 
 
 class RunScanTests(unittest.TestCase):
-    def test_sets_match_on_every_job_and_updates_last_scan(self):
+    def setUp(self):
+        # Every sample job in test data needs a resume on file, or run_scan fails clearly
+        # before scoring anything (see test_no_resume_fails_clearly below for that path).
+        # Inserted directly via db.py, not store.save_profile_document, to skip rag chunking.
+        db.upsert_profile_document(store.user_id, "resume", "resume.txt", "Senior PM, 8 years, fintech", "2026-01-01")
+
+    def tearDown(self):
+        _delete_profile_document("resume")
+        _delete_profile_document("story_bank")
+
+    @mock.patch("src.ai.score_job")
+    def test_test_mode_calls_the_real_scorer_forced_to_the_free_default_model(self, score_job):
+        score_job.return_value = {"score": 88, "summary": "Solid overlap"}
         self.assertGreater(len(store.jobs), 0)  # sample catalog seeded at store import
-        before = store.last_scan
 
-        result = scanner.run_scan()
+        run_id = scanner.run_scan(mode="test", model="some/paid-model")  # requested model must be ignored
 
-        self.assertIs(result, store.jobs)
-        self.assertTrue(all("match" in job and isinstance(job["match"], int) for job in store.jobs))
+        self.assertEqual(score_job.call_count, len(store.jobs))
+        self.assertTrue(all(c.args[-1] == agents.DEFAULT_MODEL for c in score_job.call_args_list))
+
+        run = store.get_scoring_run(run_id)
+        self.assertEqual(run["mode"], "test")
+        self.assertEqual(run["status"], "ok")
+        self.assertEqual(run["model"], agents.DEFAULT_MODEL)
+        self.assertEqual(run["scored_count"], len(store.jobs))
+
+        results = store.get_scoring_run_results(run_id)
+        self.assertEqual(len(results), len(store.jobs))
+        self.assertTrue(all(r["score"] == 88 for r in results))
+
+    @mock.patch("src.ai.score_job")
+    def test_test_mode_never_touches_the_dashboard(self, score_job):
+        score_job.return_value = {"score": 88, "summary": "Solid overlap"}
+        before = {j["id"]: (j.get("match"), j.get("match_summary")) for j in store.jobs}
+        last_scan_before = store.last_scan
+
+        scanner.run_scan(mode="test")
+
+        after = {j["id"]: (j.get("match"), j.get("match_summary")) for j in store.jobs}
+        self.assertEqual(before, after)
+        self.assertEqual(store.last_scan, last_scan_before)
+
+    @mock.patch("src.ai.score_job")
+    def test_live_mode_scores_every_job_and_updates_dashboard(self, score_job):
+        score_job.return_value = {"score": 91, "summary": "Great fit"}
+
+        run_id = scanner.run_scan(mode="live", model="some/model")
+
+        run = store.get_scoring_run(run_id)
+        self.assertEqual(run["status"], "ok")
+        self.assertEqual(run["model"], "some/model")
+        self.assertEqual(run["scored_count"], len(store.jobs))
+        self.assertTrue(all(j["match"] == 91 for j in store.jobs))
+        self.assertTrue(all(j["match_summary"] == "Great fit" for j in store.jobs))
         self.assertIsNotNone(store.last_scan)
-        self.assertNotEqual(store.last_scan, before)
 
-    def test_is_idempotent_shape(self):
-        scanner.run_scan()
-        first_pass = {j["id"]: j["match"] for j in store.jobs}
-        scanner.run_scan()
-        second_pass = {j["id"]: j["match"] for j in store.jobs}
-        self.assertEqual(first_pass, second_pass)  # same profile/weights -> same scores
+    @mock.patch("src.ai.score_job")
+    def test_live_mode_defaults_to_agents_default_model_when_none_given(self, score_job):
+        score_job.return_value = {"score": 50, "summary": "ok"}
+        scanner.run_scan(mode="live", model=None)
+        self.assertEqual(store.get_latest_scoring_run()["model"], agents.DEFAULT_MODEL)
+
+    @mock.patch("src.ai.score_job")
+    def test_live_mode_passes_resume_and_profile_fields_through(self, score_job):
+        score_job.return_value = {"score": 50, "summary": "ok"}
+        store.profile["industries"] = ["Climate tech"]
+        store.profile["industries_text"] = "mission-driven only"
+
+        scanner.run_scan(mode="live", model="m")
+
+        _job, resume_text, story_bank_text, industries, industries_text, model = score_job.call_args.args
+        self.assertIn("Senior PM", resume_text)
+        self.assertEqual(story_bank_text, "")
+        self.assertEqual(industries, ["Climate tech"])
+        self.assertEqual(industries_text, "mission-driven only")
+        self.assertEqual(model, "m")
+
+    @mock.patch("src.ai.score_job")
+    def test_a_failure_mid_run_is_recorded_not_raised(self, score_job):
+        score_job.side_effect = [{"score": 80, "summary": "ok"}, RuntimeError("model unusable")]
+
+        run_id = scanner.run_scan(mode="live")  # must not raise
+
+        run = store.get_scoring_run(run_id)
+        self.assertEqual(run["status"], "error")
+        self.assertIn("model unusable", run["error_message"])
+        self.assertEqual(run["scored_count"], 1)
+
+    def test_no_resume_fails_clearly_without_calling_the_llm(self):
+        _delete_profile_document("resume")
+        with mock.patch("src.ai.agents.send_message") as send_message:
+            run_id = scanner.run_scan(mode="live")
+            send_message.assert_not_called()
+
+        run = store.get_scoring_run(run_id)
+        self.assertEqual(run["status"], "error")
+        self.assertIn("No resume", run["error_message"])
+        self.assertEqual(run["scored_count"], 0)
+
+    def test_no_resume_fails_clearly_in_test_mode_too(self):
+        _delete_profile_document("resume")
+        with mock.patch("src.ai.agents.send_message") as send_message:
+            run_id = scanner.run_scan(mode="test")
+            send_message.assert_not_called()
+
+        run = store.get_scoring_run(run_id)
+        self.assertEqual(run["status"], "error")
+        self.assertIn("No resume", run["error_message"])
 
 
 if __name__ == "__main__":

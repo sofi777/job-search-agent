@@ -323,5 +323,74 @@ class ComponentRunTests(DbTestCase):
         self.assertEqual(db.fetch_raw_results(-1), [])
 
 
+class ScoringRunTests(DbTestCase):
+    """scoring_runs / scoring_run_results - the Score fit tool's run log (src/scanner.py,
+    app.py's score_fit_run(), /tools/score_fit)."""
+
+    def test_insert_and_finish_run_round_trip(self):
+        run_id = db.insert_scoring_run("t1", "live", "some/model")
+        run = db.fetch_scoring_run(run_id)
+        self.assertEqual(run["mode"], "live")
+        self.assertEqual(run["model"], "some/model")
+        self.assertEqual(run["status"], "running")
+
+        db.finish_scoring_run(run_id, "t2", "ok", 3)
+        run = db.fetch_scoring_run(run_id)
+        self.assertEqual(run["status"], "ok")
+        self.assertEqual(run["scored_count"], 3)
+        self.assertIsNone(run["error_message"])
+
+    def test_finish_run_with_error(self):
+        run_id = db.insert_scoring_run("t1", "live", "m")
+        db.finish_scoring_run(run_id, "t2", "error", 0, "No resume uploaded - can't score fit without one.")
+        run = db.fetch_scoring_run(run_id)
+        self.assertEqual(run["status"], "error")
+        self.assertEqual(run["error_message"], "No resume uploaded - can't score fit without one.")
+
+    def test_fetch_scoring_runs_newest_first(self):
+        r1 = db.insert_scoring_run("t1", "test", "m")
+        r2 = db.insert_scoring_run("t2", "live", "m")
+        self.assertEqual([r["id"] for r in db.fetch_scoring_runs()], [r2, r1])
+
+    def test_fetch_scoring_run_results_joins_job_title_company(self):
+        job_id = make_job("https://x.com/1")
+        run_id = db.insert_scoring_run("t1", "live", "m")
+        db.insert_scoring_result(run_id, job_id, 82, "Good overlap")
+        results = db.fetch_scoring_run_results(run_id)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["score"], 82)
+        self.assertEqual(results[0]["title"], "Engineer")
+        self.assertEqual(results[0]["company"], "Acme")
+
+    def test_fetch_latest_scores_only_uses_most_recent_ok_live_run(self):
+        job_id = make_job("https://x.com/1")
+
+        old_run = db.insert_scoring_run("t1", "live", "m")
+        db.insert_scoring_result(old_run, job_id, 40, "old")
+        db.finish_scoring_run(old_run, "t1b", "ok", 1)
+
+        new_run = db.insert_scoring_run("t2", "live", "m")
+        db.insert_scoring_result(new_run, job_id, 90, "new")
+        db.finish_scoring_run(new_run, "t2b", "ok", 1)
+
+        self.assertEqual(db.fetch_latest_scores(), {job_id: {"score": 90, "summary": "new"}})
+
+    def test_fetch_latest_scores_ignores_test_mode_and_failed_runs(self):
+        job_id = make_job("https://x.com/1")
+
+        test_run = db.insert_scoring_run("t1", "test", "m")
+        db.insert_scoring_result(test_run, job_id, 75, "fixture")
+        db.finish_scoring_run(test_run, "t1b", "ok", 1)
+
+        failed_run = db.insert_scoring_run("t2", "live", "m")
+        db.insert_scoring_result(failed_run, job_id, 10, "partial")
+        db.finish_scoring_run(failed_run, "t2b", "error", 1, "boom")
+
+        self.assertEqual(db.fetch_latest_scores(), {})
+
+    def test_fetch_latest_scores_empty_when_no_runs(self):
+        self.assertEqual(db.fetch_latest_scores(), {})
+
+
 if __name__ == "__main__":
     unittest.main()

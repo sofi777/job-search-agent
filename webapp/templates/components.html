@@ -69,7 +69,7 @@
       <div class="component-card">
         <div class="kicker">Soul</div>
         <h3>Profile + scoring criteria</h3>
-        <p class="text-muted">Your onboarding profile and priority weights</p>
+        <p class="text-muted">Your onboarding profile: resume, story bank, industries and free-text preferences</p>
         <span class="tag tag-neutral">Not connected</span>
       </div>
       <div class="component-card">
@@ -100,14 +100,26 @@
       <a class="component-card" href="{{ url_for('tool_detail', tool_id='score_fit') }}">
         <div class="kicker">Tool</div>
         <h3>Score fit</h3>
-        <p class="text-muted">LLM scoring vs. profile's soft preferences (industries, free text) - not run during sourcing</p>
-        <span class="tag tag-neutral">Not connected</span>
+        <p class="text-muted">LLM scoring of resume/story-bank skill fit and industries/free-text alignment, run on demand against every job on the dashboard</p>
+        <span class="tag tag-outline">Live</span>
       </a>
       <a class="component-card" href="{{ url_for('tool_detail', tool_id='update_applied_status') }}">
         <div class="kicker">Tool</div>
         <h3>Update applied status</h3>
         <p class="text-muted">Match confirmation email &rarr; job, mark Applied or insert new row</p>
         <span class="tag tag-neutral">Not connected</span>
+      </a>
+      <a class="component-card" href="{{ url_for('tool_detail', tool_id='tailored_generation') }}">
+        <div class="kicker">Tool</div>
+        <h3>Tailored generation</h3>
+        <p class="text-muted">Cover letter, resume &amp; Q&amp;A drafting for a job, grounded in your resume/story bank</p>
+        <span class="tag tag-outline">Live</span>
+      </a>
+      <a class="component-card" href="{{ url_for('tool_detail', tool_id='preference_learning') }}">
+        <div class="kicker">Tool</div>
+        <h3>Preference learning</h3>
+        <p class="text-muted">Learns durable writing-style preferences from your tailoring-chat feedback</p>
+        <span class="tag tag-outline">Live</span>
       </a>
     </div>
   </section>

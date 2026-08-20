@@ -12,6 +12,9 @@
   .mode-tab.active { border-color: var(--color-accent); font-weight: 600; }
   .mode-panel { display: none; }
   .mode-panel.active { display: block; }
+  .run-actions { display: flex; gap: 8px; margin: var(--space-4) 0; flex-wrap: wrap; }
+  .run-summary { font-size: 13px; margin-bottom: var(--space-3); }
+  .run-summary .error { color: var(--color-accent); }
 </style>
 
 <div class="container">
@@ -25,6 +28,210 @@
   <div class="hr"></div>
   <span class="tag tag-neutral">Not connected</span>
   <p class="text-muted" style="max-width:640px;margin-top:8px;">{{ meta.blocked_reason }}</p>
+  {% endif %}
+
+  {% if tool_id == 'score_fit' %}
+  <div class="hr"></div>
+  <h2>Run</h2>
+  <p class="text-muted" style="font-size:12px;">Scores every job on the dashboard against your resume, story bank, and stated
+    industries/free-text preferences (src/ai.score_job) - role/title, location, remoteness, and salary are already hard-filtered
+    before a job gets here, so this only judges what filtering can't. Test mode makes real LLM calls (not a fixture - it's meant
+    to actually exercise the scorer), but always on the free default model regardless of what's picked above, and never updates
+    the dashboard. Live mode uses the model you pick and updates the dashboard on success.</p>
+  <form method="post" action="{{ url_for('score_fit_run') }}" class="run-actions">
+    <select class="input" name="model" id="score-fit-model" style="max-width:260px;" disabled title="Test mode always uses the free default model - switch to Live mode to pick one">
+      {% for m in model_options %}
+      <option value="{{ m }}" {{ 'selected' if m == default_model else '' }}>{{ m }}</option>
+      {% endfor %}
+    </select>
+    <select class="input" name="mode" style="max-width:160px;"
+            onchange="document.getElementById('score-fit-model').disabled = this.value !== 'live';">
+      <option value="test">Test mode</option>
+      <option value="live">Live mode</option>
+    </select>
+    <button type="submit" class="btn btn-primary"
+            onclick="return this.form.mode.value !== 'live' || confirm('This scores every job for real (LLM calls) and updates your dashboard. Continue?');">
+      Run
+    </button>
+  </form>
+
+  {% if scoring_run %}
+  <div class="run-summary text-muted">
+    Run #{{ scoring_run.id }} &middot; {{ scoring_run.mode|capitalize }} mode &middot; {{ scoring_run.status|capitalize }}
+    &middot; {{ scoring_run.model }} &middot; {{ scoring_run.scored_count }} scored &middot; started {{ scoring_run.started_at }}
+    {% if scoring_run.error_message %}<br><span class="error">{{ scoring_run.error_message }}</span>{% endif %}
+  </div>
+  {% endif %}
+
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Title</th><th>Company</th><th>Score</th><th>Why</th></tr></thead>
+      <tbody>
+        {% for r in scoring_results %}
+        <tr>
+          <td><a href="{{ url_for('job_detail', job_id=r.job_id) }}" style="color:var(--color-text);font-weight:600;text-decoration:none;">{{ r.title }}</a></td>
+          <td>{{ r.company }}</td>
+          <td style="white-space:nowrap;">{{ r.score }}%</td>
+          <td style="font-size:13px;">{{ r.summary }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if scoring_run and not scoring_results %}
+    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">No results{% if scoring_run.status == 'error' %} - see error above{% endif %}.</div>
+    {% elif not scoring_run %}
+    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">No runs yet.</div>
+    {% endif %}
+  </div>
+
+  <div class="hr"></div>
+  <h2>Run history</h2>
+  {% if scoring_runs %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Run</th><th>Mode</th><th>Status</th><th>Model</th><th>Scored</th><th>Started</th></tr></thead>
+      <tbody>
+        {% for r in scoring_runs %}
+        <tr>
+          <td><a href="{{ url_for('tool_detail', tool_id='score_fit', run=r.id) }}">#{{ r.id }}</a></td>
+          <td>{{ r.mode|capitalize }}</td>
+          <td><span class="tag {{ 'tag-accent' if r.status == 'error' else 'tag-neutral' }}">{{ r.status|capitalize }}</span></td>
+          <td style="font-size:12px;">{{ r.model }}</td>
+          <td>{{ r.scored_count }}</td>
+          <td style="white-space:nowrap;">{{ r.started_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted">No runs yet.</p>
+  {% endif %}
+  {% endif %}
+
+  {% if tool_id == 'tailored_generation' %}
+  <div class="hr"></div>
+  <h2>Run</h2>
+  <p class="text-muted" style="font-size:12px;">Pick a job to open its tailoring chat - cover letter, resume, and Q&amp;A are
+    tabs there, each with its own model picker and Generate button (src/agents.run_tailor_turn).</p>
+  <form class="run-actions" onsubmit="return false;">
+    <select class="input" id="tailored-generation-job" style="max-width:360px;">
+      <option value="" disabled {{ 'selected' if not all_jobs else '' }}>Select a job&hellip;</option>
+      {% for j in all_jobs %}
+      <option value="{{ j.id }}">{{ j.title }} - {{ j.company }}</option>
+      {% endfor %}
+    </select>
+    <button type="button" class="btn btn-primary"
+            onclick="var id = document.getElementById('tailored-generation-job').value; if (id) window.location = '/jobs/' + id + '/tailor';">
+      Open
+    </button>
+  </form>
+  {% if not all_jobs %}
+  <p class="text-muted" style="font-size:12px;">No jobs on your dashboard yet - add one first.</p>
+  {% endif %}
+  {% endif %}
+
+  {% if tool_id == 'preference_learning' %}
+  <div class="hr"></div>
+  <h2>Run</h2>
+  <p class="text-muted" style="font-size:12px;">Replays tailoring-chat feedback that hasn't been checked yet - live or in a prior
+    run of this - through the same reveals-a-preference judgment the tailoring chat makes automatically per turn
+    (src/learning.py). Test mode makes real LLM calls and previews what would change below, but never touches
+    /preferences and never marks anything checked, so it's safe to re-run. Live mode applies whatever it finds and
+    marks every message it looked at as checked, so a repeat run only ever processes feedback that arrived since.
+    <strong>{{ unchecked_count }}</strong> feedback message{{ '' if unchecked_count == 1 else 's' }} not yet checked.</p>
+  <form method="post" action="{{ url_for('preference_learning_run') }}" class="run-actions">
+    <select class="input" name="scope_job_id" style="max-width:260px;">
+      <option value="">All jobs</option>
+      {% for j in all_jobs %}
+      <option value="{{ j.id }}">{{ j.title }} - {{ j.company }}</option>
+      {% endfor %}
+    </select>
+    <select class="input" name="model" id="pref-learning-model" style="max-width:260px;" disabled title="Test mode always uses the free default model - switch to Live mode to pick one">
+      {% for m in model_options %}
+      <option value="{{ m }}" {{ 'selected' if m == default_model else '' }}>{{ m }}</option>
+      {% endfor %}
+    </select>
+    <select class="input" name="mode" style="max-width:160px;"
+            onchange="document.getElementById('pref-learning-model').disabled = this.value !== 'live';">
+      <option value="test">Test mode</option>
+      <option value="live">Live mode</option>
+    </select>
+    <button type="submit" class="btn btn-primary"
+            onclick="return this.form.mode.value !== 'live' || confirm('This applies whatever it learns to /preferences for real. Continue?');">
+      Run
+    </button>
+  </form>
+
+  {% if pref_learning_run %}
+  <div class="run-summary text-muted">
+    Run #{{ pref_learning_run.id }} &middot;
+    {{ job_titles.get(pref_learning_run.scope_job_id, 'All jobs') if pref_learning_run.scope_job_id else 'All jobs' }} &middot;
+    {{ pref_learning_run.mode|capitalize }} mode &middot; {{ pref_learning_run.status|capitalize }} &middot;
+    {{ pref_learning_run.model }} &middot; {{ pref_learning_run.processed_count }} checked, {{ pref_learning_run.updated_count }} revised
+    &middot; started {{ pref_learning_run.started_at }}
+    {% if pref_learning_run.error_message %}<br><span class="error">{{ pref_learning_run.error_message }}</span>{% endif %}
+  </div>
+  {% endif %}
+
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Job</th><th>Category</th><th>Feedback</th></tr></thead>
+      <tbody>
+        {% for r in pref_learning_results %}
+        <tr>
+          <td><a href="{{ url_for('job_detail', job_id=r.job_id) }}" style="color:var(--color-text);font-weight:600;text-decoration:none;">{{ r.title }}</a> <span class="text-muted" style="font-size:11px;">{{ r.company }}</span></td>
+          <td>{{ tab_labels.get(r.category, r.category|capitalize) }}</td>
+          <td style="font-size:13px;">{{ r.message_excerpt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if pref_learning_run and not pref_learning_results %}
+    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">Nothing revised this run.</div>
+    {% elif not pref_learning_run %}
+    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">No runs yet.</div>
+    {% endif %}
+  </div>
+
+  <div class="hr"></div>
+  <h2>Run history</h2>
+  {% if pref_learning_runs %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Run</th><th>Scope</th><th>Mode</th><th>Status</th><th>Model</th><th>Checked</th><th>Revised</th><th>Started</th></tr></thead>
+      <tbody>
+        {% for r in pref_learning_runs %}
+        <tr>
+          <td><a href="{{ url_for('tool_detail', tool_id='preference_learning', run=r.id) }}">#{{ r.id }}</a></td>
+          <td>{{ job_titles.get(r.scope_job_id, 'All jobs') if r.scope_job_id else 'All jobs' }}</td>
+          <td>{{ r.mode|capitalize }}</td>
+          <td><span class="tag {{ 'tag-accent' if r.status == 'error' else 'tag-neutral' }}">{{ r.status|capitalize }}</span></td>
+          <td style="font-size:12px;">{{ r.model }}</td>
+          <td>{{ r.processed_count }}</td>
+          <td>{{ r.updated_count }}</td>
+          <td style="white-space:nowrap;">{{ r.started_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted">No runs yet.</p>
+  {% endif %}
+
+  <div class="hr"></div>
+  <h2>What it's learned</h2>
+  <p class="text-muted" style="font-size:12px;">Read-only here - <a href="{{ url_for('preferences') }}">edit on /preferences</a>.</p>
+  <dl class="filters-list">
+    {% for category, pref in prefs.items() %}
+    <dt>{{ tab_labels.get(category, category|capitalize) }}</dt>
+    <dd>
+      {{ pref.text or '(none yet)' }}
+      {% if pref.updated_at %}<br><span class="text-muted" style="font-size:11px;">updated {{ pref.updated_at }}</span>{% endif %}
+    </dd>
+    {% endfor %}
+  </dl>
   {% endif %}
 
   {% if tool_id == 'filter_dedupe' %}

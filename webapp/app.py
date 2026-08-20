@@ -6,7 +6,7 @@ from flask import Flask, redirect, render_template, request, session, url_for
 from markupsafe import Markup, escape
 from werkzeug.utils import secure_filename
 
-from src import agents, ai, files, filters, scanner, store, tools
+from src import agents, ai, files, filters, learning, scanner, store, tools
 from src import components as comp
 
 app = Flask(__name__)
@@ -362,20 +362,6 @@ def job_add():
     return redirect(url_for("dashboard"))
 
 
-# ---- priority ranking -----------------------------------------------------
-
-@app.route("/priority", methods=["GET", "POST"])
-@login_required
-def priority():
-    if request.method == "POST":
-        for key in store.priority_weights:
-            store.priority_weights[key] = int(request.form.get(key, store.priority_weights[key]))
-        store.save_priority_weights()
-        scanner.run_scan()
-        return redirect(url_for("dashboard"))
-    return render_template("priority.html", weights=store.priority_weights)
-
-
 # ---- job detail + generated docs ------------------------------------------
 
 @app.route("/jobs/<int:job_id>")
@@ -549,7 +535,7 @@ def _run_pane_turn(chat_session, job, display_message, preferences):
         # Saved now, before any of the LLM calls below that could fail - so the user's message
         # is never lost from this pane's thread if something downstream breaks. history was
         # already fetched above, so this doesn't duplicate into what gets sent to the model.
-        store.add_chat_message(session_id, job["id"], tab, "user", display_message, model)
+        user_message_id = store.add_chat_message(session_id, job["id"], tab, "user", display_message, model)
 
         current_text = _qa_context_text(session_id) if tab == "qa" else store.get_artifact_text(session_id)
 
@@ -607,6 +593,12 @@ def _run_pane_turn(chat_session, job, display_message, preferences):
                 # generated and saved successfully, so a broken model reply here shouldn't
                 # discard that and report the whole turn as failed.
                 pass
+        # classify_turn (above) always ran for this message regardless of check_preferences,
+        # so it's fully considered either way - mark it so a /tools/preference_learning bulk
+        # run never re-spends a call on it. Only reached once the turn's succeeded end to end;
+        # a message from a turn that raised before here is left unmarked, for the bulk run to
+        # pick up later (see src/learning.py).
+        store.mark_message_preference_checked(user_message_id)
         return None
     except RuntimeError as e:
         return str(e)
@@ -944,6 +936,29 @@ def tool_detail(tool_id):
     component_names = {cid: comp.COMPONENTS[cid]["name"] for cid in COMPONENT_IDS}
 
     active_filters, runs_by_mode, staged_results, jobs_by_mode = None, None, None, None
+    scoring_runs, scoring_run, scoring_results = None, None, None
+    all_jobs, prefs = None, None
+    pref_learning_runs, pref_learning_run, pref_learning_results, unchecked_count = None, None, None, None
+    job_titles = None
+    if tool_id == "tailored_generation":
+        all_jobs = store.jobs
+
+    if tool_id == "preference_learning":
+        all_jobs = store.jobs
+        prefs = store.get_preferences_full()
+        pref_learning_runs = store.get_preference_learning_runs()
+        run_id = request.args.get("run", type=int)
+        pref_learning_run = store.get_preference_learning_run(run_id) if run_id else store.get_latest_preference_learning_run()
+        pref_learning_results = store.get_preference_learning_run_results(pref_learning_run["id"]) if pref_learning_run else []
+        unchecked_count = len(store.get_unchecked_feedback_messages())
+        job_titles = {j["id"]: j["title"] for j in store.jobs}
+
+    if tool_id == "score_fit":
+        scoring_runs = store.get_scoring_runs()
+        run_id = request.args.get("run", type=int)
+        scoring_run = store.get_scoring_run(run_id) if run_id else store.get_latest_scoring_run()
+        scoring_results = store.get_scoring_run_results(scoring_run["id"]) if scoring_run else []
+
     if tool_id == "filter_dedupe":
         # Filtering a run and saving what survives are two steps of one review flow, shown
         # together: active filters -> run log (with a Run button on anything still
@@ -962,7 +977,37 @@ def tool_detail(tool_id):
         "tool_detail.html", tool_id=tool_id, meta=meta, component_names=component_names,
         active_filters=active_filters, runs_by_mode=runs_by_mode,
         staged_results=staged_results, jobs_by_mode=jobs_by_mode,
+        scoring_runs=scoring_runs, scoring_run=scoring_run, scoring_results=scoring_results,
+        model_options=agents.MODEL_OPTIONS, default_model=agents.DEFAULT_MODEL,
+        all_jobs=all_jobs, prefs=prefs, tab_labels=TAB_LABELS,
+        pref_learning_runs=pref_learning_runs, pref_learning_run=pref_learning_run,
+        pref_learning_results=pref_learning_results, unchecked_count=unchecked_count, job_titles=job_titles,
     )
+
+
+@app.route("/tools/score_fit/run", methods=["POST"])
+@login_required
+def score_fit_run():
+    # Defaults to test mode unless "live" is explicitly submitted - same guard as
+    # component_run() above, a missing/malformed field should never trigger a real,
+    # credit-spending run.
+    mode = "live" if request.form.get("mode") == "live" else "test"
+    model = request.form.get("model") or agents.DEFAULT_MODEL
+    run_id = scanner.run_scan(mode=mode, model=model)
+    return redirect(url_for("tool_detail", tool_id="score_fit", run=run_id))
+
+
+@app.route("/tools/preference_learning/run", methods=["POST"])
+@login_required
+def preference_learning_run():
+    # Same guard as score_fit_run/component_run above - a missing/malformed field should
+    # never trigger a real, credit-spending run.
+    mode = "live" if request.form.get("mode") == "live" else "test"
+    model = request.form.get("model") or agents.DEFAULT_MODEL
+    scope = request.form.get("scope_job_id")
+    scope_job_id = int(scope) if scope else None
+    run_id = learning.run_learning(scope_job_id=scope_job_id, mode=mode, model=model)
+    return redirect(url_for("tool_detail", tool_id="preference_learning", run=run_id))
 
 
 if __name__ == "__main__":
