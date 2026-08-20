@@ -44,6 +44,20 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   Extracted from `app.py`'s `_run_pane_turn` so it's shared verbatim by the per-job
   Tailor pane route and `src/assistant.py`'s chat-driven cover-letter drafting - one
   code path, so feedback given from either surface behaves identically.
+- **Preferred cover letter** ("ready to send") - one `cover_letter` `chat_session` per
+  job can be marked preferred (`db.preferred_cover_letters`: `job_id` -> `session_id`,
+  see `store.mark_preferred_cover_letter`/`get_preferred_cover_letter`/
+  `unmark_preferred_cover_letter`). It's a pointer only, no copied content - the
+  preferred letter's text is always `store.get_artifact_text(session_id)` read live, so
+  a later revision to that same session (Tailor-page pane edit, or chat feedback after
+  "show me the preferred letter") stays the preferred version automatically, no refresh
+  step needed. `POST /jobs/<id>/tailor/cover_letter/session/<session_id>/prefer`
+  (`app.py`'s `toggle_preferred_cover_letter`) marks/unmarks from a Tailor-page pane;
+  only one job's worth of state, marking a different pane replaces it. `job_detail.html`
+  shows a preview card when one's marked. The floating assistant's `"show_preferred"`
+  routed action (see `src/assistant.py` below) surfaces the same pointer in chat, and
+  `get_or_create_cover_letter_session` prefers that job's marked session over the plain
+  "first pane" default once one exists, so chat-driven feedback keeps landing on it.
 - **`src/assistant.py`** - the floating assistant's orchestrator: one continuous global
   thread (not scoped to a job or a "pane", see `assistant_messages` below).
   `handle_turn(message, model)` calls `agents.route_assistant_turn` then dispatches to a
@@ -51,16 +65,21 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   in Python from the summary, no second LLM call), `"cover_letter"` (`resolve_job` +
   `get_or_create_cover_letter_session` + `tailoring.run_turn`, mirrored into this thread
   with `linked_chat_message_id` pointing at the real `chat_messages` row so the widget's
-  rating buttons hit the existing `/messages/<id>/rate` route), or plain chat
-  (`agents.answer_assistant_message`). `resolve_job(job_query, jobs)` is a deterministic
-  (no LLM) match against `store.jobs` - rank phrases ("top job", "#2") or a title/company
-  substring match; ambiguous/no match returns candidates instead of guessing. Job
-  continuity: if a turn doesn't name a job, falls back to `store.get_active_job_id()`
-  (the most recent job any prior turn discussed, skipping job-agnostic turns like a
-  workflow run). `get_or_create_cover_letter_session` retargets an existing session's
-  model in place (`store.set_session_model`, not the fork-aware
-  `store.switch_session_model` built for Tailor-page compare panes) so switching models
-  in the widget never forks/resets the conversation.
+  rating buttons hit the existing `/messages/<id>/rate` route), `"show_preferred"`
+  (`_handle_show_preferred_turn` - a plain `store.get_preferred_cover_letter` lookup, no
+  LLM generation call, mirrored the same way but without `linked_chat_message_id` since
+  it's a read, not a turn), or plain chat (`agents.answer_assistant_message`).
+  `resolve_job(job_query, jobs)` is a deterministic (no LLM) match against `store.jobs` -
+  rank phrases ("top job", "#2") or a title/company substring match; ambiguous/no match
+  returns candidates instead of guessing. Job continuity: if a turn doesn't name a job,
+  falls back to `store.get_active_job_id()` (the most recent job any prior turn
+  discussed, skipping job-agnostic turns like a workflow run). `get_or_create_cover_
+  letter_session` retargets an existing session's model in place (`store.
+  set_session_model`, not the fork-aware `store.switch_session_model` built for
+  Tailor-page compare panes) so switching models in the widget never forks/resets the
+  conversation; if the job has a cover letter marked preferred (see below), that
+  session always wins over the plain "first pane" default, so chat feedback after
+  showing/drafting the preferred letter keeps revising that exact one.
 - **`src/prompts/`** - tailoring chat prompt templates, one `.txt` file per artifact
   type, the preference-revision prompt, and the assistant's own (`assistant_chat.txt`,
   `route_assistant_turn.txt`).
@@ -126,10 +145,11 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   `src/assistant.py`'s router can trigger by name; `"pending"` entries are still
   display-only. `run_job_search_rerank(mode)` (the `job_search_rerank` entry's runner):
   for each `src/components/` entry, fetch -> `store.save_fetch_results` ->
-  `store.apply_run_filters` -> `store.add_run_result_to_dashboard` on every kept result,
-  then `scanner.run_scan(mode)`. Never raises - mirrors `scanner.run_scan`'s contract, a
-  failure in one component (or an already-on-the-dashboard race) is recorded/skipped, not
-  fatal to the others. `tailor_top_3` stays `"pending"` (no runner) - not yet built.
+  `store.apply_run_filters` (saves survivors to the jobs table itself and returns how many -
+  the single source of truth for "added" counts, see below), then `scanner.run_scan(mode)`.
+  Never raises - mirrors `scanner.run_scan`'s contract, a failure in one component is
+  recorded/skipped, not fatal to the others. `tailor_top_3` stays `"pending"` (no runner) -
+  not yet built.
 - **`scripts/`** - quick manual scripts (`test_agents.py`, `show_last_call.py`).
 - **`templates/`** - Jinja2 HTML, all extending `base.html`. `base.html` also includes
   `chat_widget.html` on every logged-in page (the floating assistant bubble/panel - see
@@ -162,6 +182,7 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   vs. user data):
   - `app.db` - SQLite: user profile, jobs, per-job progress, chat_sessions (compare
     panes), chat, artifacts, preferences, documents, chunks, citations, settings,
+    preferred_cover_letters (job_id -> session_id, see Preferred cover letter above),
     scoring_runs/scoring_run_results (fit-scoring run log, see `src/scanner.py`),
     assistant_messages (the floating assistant's single global thread - `job_id`
     nullable, set per-message to whichever job that turn concerned;
@@ -184,7 +205,9 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
 button; `POST /jobs/<id>/tailor/<tab>/session/<session_id>/message` sends to one
 pane only, `POST /jobs/<id>/tailor/<tab>/sessions` adds a pane, `POST
 /jobs/<id>/tailor/<tab>/session/<session_id>/remove` hides one - its history can be
-resurfaced by re-adding the same model). Settings pages:
+resurfaced by re-adding the same model; `POST /jobs/<id>/tailor/cover_letter/session/
+<session_id>/prefer` marks/unmarks that pane as the job's preferred "ready to send"
+letter, see Preferred cover letter above). Settings pages:
 `/profile`, `/preferences`, `/chunks`, `/results`,
 `/usage`. Rating a response: `POST /messages/<id>/rate`.
 
@@ -227,10 +250,16 @@ from a component's own page (only from the Filter & dedupe tool - see below):
 component's `run()` returns is staged as its own `component_run_results` row immediately,
 status `"kept"` by default, addable via "Add to dashboard" right away; a display-only copy
 also lands on `component_runs.raw_results_json`; run status `"fetched"`) and
-`store.apply_run_filters(run_id)` (filter stage - re-evaluates that run's already-staged
-rows through `src/filters.py` and flips whatever doesn't survive to status `"filtered"` +
-a `filter_reason` - kept rows are untouched, nothing is removed or re-inserted; clears the
-now-redundant raw JSON; run status `"ok"`/`"error"`; no-op unless status is `"fetched"`).
+`store.apply_run_filters(run_id)` (filter + save stage - re-evaluates that run's
+already-staged rows through `src/filters.py`; whatever doesn't survive flips to status
+`"filtered"` + a `filter_reason` and stays in `component_run_results` for manual override
+(see `/tools/filter_dedupe` below); whatever survives is inserted straight into the `jobs`
+table via `db.insert_job` - it already cleared every gate, so there's nothing left to
+review - and its `component_run_results` row is left as `"kept"` (audit trail only, not
+queried for review anymore); returns the number saved, the single source of truth for
+"added" counts, used by both `/tools/filter_dedupe`'s run summary and
+`workflows.run_job_search_rerank`; clears the now-redundant raw JSON; run status
+`"ok"`/`"error"`; no-op (returns 0) unless status is `"fetched"`).
 `POST /components/<id>/runs/<run_id>/filter` (`component_run_filter()`) is the filter
 stage's route - its "Filter & dedupe now" button lives only on the `/tools/filter_dedupe`
 run log (per row, whenever a run is sitting in `"fetched"`), never on a component's own
@@ -258,10 +287,12 @@ the hard-preference values currently read from the profile
 (`filters.describe_active_filters`); every source run's filter/dedup outcome across all
 components with a "Run" button on any still `"fetched"`, and an expandable per-job
 kept/filtered breakdown on any already filtered (`store.get_all_component_runs`, each row
-enriched with `store.get_run_results(id)` in `app.py`'s `tool_detail()`); staged (kept)
-results not yet on the dashboard, each with "Add to dashboard"
+enriched with `store.get_run_results(id)` in `app.py`'s `tool_detail()`); a "Filtered out"
+table of results the gate dropped and that aren't already on the dashboard some other way,
+each with "Add to dashboard" for manual override, with the drop reason shown
 (`store.get_staged_results_for_review` - every `component_run_results` row with
-`status = "kept"` whose url isn't already in `jobs`); and the saved-jobs log, tagged with
+`status = "filtered"` whose url isn't already in `jobs`; survivors never appear here since
+`apply_run_filters` already saved them); and the saved-jobs log, tagged with
 the mode of the run that staged it (`store.get_run_modes_for_urls`). The three pending
 tools just show their
 `blocked_reason`. `tailored_generation` shows a job `<select>` + Open button that

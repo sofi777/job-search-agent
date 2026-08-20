@@ -196,6 +196,18 @@ def init_db():
                 updated_at TEXT
             )
         """)
+
+        # One job can have at most one cover-letter chat_session marked "ready to send" -
+        # see src/store.py's preferred-cover-letter wrappers. Content is never copied here;
+        # it's always read live from that session's artifact (store.get_artifact_text), so a
+        # later revision to the same session stays the preferred version automatically.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS preferred_cover_letters (
+                job_id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL,
+                marked_at TEXT NOT NULL
+            )
+        """)
         for category in PREFERENCE_CATEGORIES:
             conn.execute("INSERT OR IGNORE INTO preferences (category, text) VALUES (?, '')", (category,))
 
@@ -834,6 +846,26 @@ def update_preference(category, text, updated_at):
         )
 
 
+def set_preferred_cover_letter(job_id, session_id, marked_at):
+    with db_transaction() as conn:
+        conn.execute(
+            "INSERT INTO preferred_cover_letters (job_id, session_id, marked_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(job_id) DO UPDATE SET session_id = excluded.session_id, marked_at = excluded.marked_at",
+            (job_id, session_id, marked_at),
+        )
+
+
+def get_preferred_cover_letter(job_id):
+    with db_transaction() as conn:
+        row = conn.execute("SELECT * FROM preferred_cover_letters WHERE job_id = ?", (job_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def clear_preferred_cover_letter(job_id):
+    with db_transaction() as conn:
+        conn.execute("DELETE FROM preferred_cover_letters WHERE job_id = ?", (job_id,))
+
+
 def upsert_profile_document(user_id, doc_type, filename, content, created_at):
     """Insert/replace a profile-wide (job_id NULL) singleton document: resume, cover_letter_sample, story_bank.
 
@@ -1228,15 +1260,17 @@ def fetch_run_result(result_id):
     return dict(row) if row else None
 
 
-def fetch_recent_run_results(limit=200):
-    """Most recent kept (not filtered out) results across every run, newest first, each
-    tagged with its run's component_id and mode - used by the merged Filter & dedupe +
-    Save tool page (store.get_staged_results_for_review filters out ones already added)."""
+def fetch_recent_filtered_results(limit=200):
+    """Most recent filtered-out (dropped by the hard-preference gate or dedup) results
+    across every run, newest first, each tagged with its run's component_id/mode and why it
+    was dropped - used by the merged Filter, dedupe & Save tool page for manual override
+    (store.get_staged_results_for_review filters out ones already added another way). Kept
+    results never appear here - they're saved to the jobs table automatically."""
     with db_transaction() as conn:
         rows = conn.execute(
             """SELECT res.*, r.component_id, r.mode FROM component_run_results res
                JOIN component_runs r ON r.id = res.run_id
-               WHERE res.status = 'kept'
+               WHERE res.status = 'filtered'
                ORDER BY res.id DESC LIMIT ?""",
             (limit,),
         ).fetchall()

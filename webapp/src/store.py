@@ -425,6 +425,35 @@ def update_qa(qa_id, answer):
     db.update_qa_artifact(qa_id, answer, _now())
 
 
+# ---- preferred cover letter -------------------------------------------------
+# One cover_letter chat_session per job can be marked "ready to send" - see db.py's
+# preferred_cover_letters. Its content is read live from that session's own artifact, so a
+# later revision to the same session (a Tailor-page pane edit, or chat feedback after "show
+# me the preferred letter") stays the preferred version automatically - no separate refresh.
+
+def mark_preferred_cover_letter(job_id, session_id):
+    db.set_preferred_cover_letter(job_id, session_id, _now())
+
+
+def unmark_preferred_cover_letter(job_id):
+    db.clear_preferred_cover_letter(job_id)
+
+
+def get_preferred_cover_letter(job_id):
+    """{"session_id", "model", "content", "marked_at"} for this job's cover letter marked
+    ready to send, or None if none is marked."""
+    pointer = db.get_preferred_cover_letter(job_id)
+    if pointer is None:
+        return None
+    chat_session = db.get_chat_session(pointer["session_id"])
+    return {
+        "session_id": pointer["session_id"],
+        "model": chat_session["model"] if chat_session else None,
+        "content": get_artifact_text(pointer["session_id"]),
+        "marked_at": pointer["marked_at"],
+    }
+
+
 def get_preferences():
     """Return {category: text} for general/cover_letter/resume/qa."""
     return {cat: row["text"] for cat, row in db.fetch_preferences().items()}
@@ -580,24 +609,43 @@ def save_fetch_results(run_id, listings, error_message=None):
 
 
 def apply_run_filters(run_id):
-    """The filter stage: run this run's already-staged results (see save_fetch_results)
-    through the hard-preference gate + dedup (src/filters.py), and flip whatever doesn't
-    survive to status "filtered" with why - kept rows are untouched. Explicit, separate
-    from fetching, and run from the Filter & dedupe tool (not a component's own page - see
-    src/components/README.md). No-op if this run has nothing pending (already filtered, or
-    never fetched)."""
+    """The filter, dedupe & save stage: run this run's already-staged results (see
+    save_fetch_results) through the hard-preference gate + dedup (src/filters.py). Whatever
+    doesn't survive flips to status "filtered" with why, staged for manual review ("add
+    anyway" - see get_staged_results_for_review); whatever survives is saved straight to the
+    jobs table - it already cleared every gate, so there's nothing left to review. Explicit,
+    separate from fetching, and run from the Filter & dedupe tool (not a component's own
+    page - see src/components/README.md). No-op (returns 0) if this run has nothing pending
+    (already filtered, or never fetched).
+
+    Returns how many results were actually saved to the jobs table - the single source of
+    truth for "added" counts, used by both the tool page and src/workflows.py's
+    run_job_search_rerank so neither has to re-implement the save step."""
     run = db.fetch_run(run_id)
     if run is None or run["status"] != "fetched":
-        return
+        return 0
 
     rows = db.fetch_run_results(run_id)
     kept, dropped = filters.filter_and_dedupe(rows, profile, known_urls=get_known_urls(exclude_run_id=run_id))
     for row, reason in dropped:
         db.mark_run_result_filtered(row["id"], reason)
+    saved_count = 0
+    for row in kept:
+        try:
+            db.insert_job({**row, "origin": run["component_id"]})
+            saved_count += 1
+        except RuntimeError as e:
+            # Cleared every gate but couldn't actually be inserted (e.g. two results in this
+            # batch share a blank url, or a race with something else adding the same url) -
+            # fall back to staging it for manual review instead of losing it.
+            db.mark_run_result_filtered(row["id"], str(e))
+    if saved_count:
+        reload_jobs()
 
     finish_run(run_id, "error" if run["error_message"] else "ok", run["fetched_count"],
                run["error_message"], filtered_count=len(dropped), filtered_reasons=filters.summarize_drops(dropped))
     db.clear_raw_results(run_id)  # display-only copy, superseded by the staged rows above
+    return saved_count
 
 
 def get_known_urls(exclude_run_id=None):
@@ -638,11 +686,13 @@ def get_run_result(result_id):
 
 
 def get_staged_results_for_review(limit=200):
-    """Every filtered/staged result not yet added to the dashboard, most recent first,
-    across every component and run - what the Filter, dedupe & save tool page shows for
-    review (see /tools/filter_dedupe)."""
+    """Every result the filter/dedupe gate dropped and that isn't already on the dashboard
+    some other way, most recent first, across every component and run - what the Filter,
+    dedupe & save tool page shows for manual override ("add anyway" - see
+    /tools/filter_dedupe). Results that survived the gate are saved automatically
+    (apply_run_filters) and never appear here."""
     known = {j["url"] for j in jobs}
-    return [r for r in db.fetch_recent_run_results(limit) if r["url"] not in known]
+    return [r for r in db.fetch_recent_filtered_results(limit) if r["url"] not in known]
 
 
 def add_run_result_to_dashboard(result_id, component_id):

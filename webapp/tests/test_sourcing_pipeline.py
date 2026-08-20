@@ -45,12 +45,13 @@ class ApplyRunFiltersTests(unittest.TestCase):
 
         # Filter stage: called separately, with only the run_id - no knowledge of the
         # component or config that produced the fetched data. This listing survives, so
-        # it stays "kept".
+        # it stays "kept" here and is saved straight to the jobs table.
         store.apply_run_filters(run_id)
         run = store.get_run(run_id)
         self.assertEqual(run["status"], "ok")
         self.assertEqual([r["url"] for r in store.get_run_results(run_id)], [listing["url"]])
         self.assertEqual(db.fetch_raw_results(run_id), [])  # display-only copy cleared once filtered
+        self.assertIn(listing["url"], {j["url"] for j in store.jobs})
 
     def test_apply_run_filters_flips_what_the_profile_excludes_to_filtered(self):
         run_id = store.start_run("serpapi", "test")
@@ -100,6 +101,16 @@ class ApplyRunFiltersTests(unittest.TestCase):
         self.assertEqual(results[kept_url]["status"], "kept")
         self.assertEqual(results[dropped_url]["status"], "filtered")
         self.assertEqual(results[dropped_url]["filter_reason"], "role/title")
+
+    def test_apply_run_filters_saves_survivors_to_the_dashboard(self):
+        run_id = store.start_run("serpapi", "test")
+        url = "https://x.com/pipeline-autosave"
+        store.save_fetch_results(run_id, [{**LISTING, "url": url}])
+        store.apply_run_filters(run_id)
+
+        self.assertIn(url, {j["url"] for j in store.jobs})
+        # Saved automatically - never shows up in the "add anyway" review list.
+        self.assertNotIn(url, [r["url"] for r in store.get_staged_results_for_review()])
 
     def test_fetch_error_with_partial_listings_still_filters_then_reports_error(self):
         run_id = store.start_run("serpapi", "test")
@@ -181,8 +192,9 @@ class ComponentRunRouteTests(unittest.TestCase):
 class FilterDedupeToolPageTests(unittest.TestCase):
     """The merged Filter, dedupe & save tool page (/tools/filter_dedupe): a Run button per
     pending run log row, a per-job kept/filtered breakdown once a run has been filtered,
-    staged (kept, not yet added) results with "Add to dashboard", and the already-saved
-    log - all in one page (previously split across two tools)."""
+    filtered-out results with "Add to dashboard" for manual override, and the already-saved
+    log - all in one page (previously split across two tools). Survivors are saved to the
+    jobs table automatically by apply_run_filters - they never need the manual button."""
 
     def setUp(self):
         self.client = flask_app.app.test_client()
@@ -226,18 +238,34 @@ class FilterDedupeToolPageTests(unittest.TestCase):
         self.assertIn(dropped_url, html)
         self.assertIn("role/title", html)
 
-    def test_staged_results_shown_and_disappear_once_added(self):
+    def test_filtered_out_results_shown_and_disappear_once_added(self):
         run_id = store.start_run("serpapi", "test")
+        store.profile["roles"] = ["Product Manager"]
+        store.save_profile()
         url = "https://x.com/tool-page-staged"
-        store.save_fetch_results(run_id, [{**LISTING, "url": url}])
+        store.save_fetch_results(run_id, [{**LISTING, "url": url, "title": "Barista"}])
+        self.client.post(f"/components/serpapi/runs/{run_id}/filter")
 
-        html = self.client.get("/tools/filter_dedupe").get_data(as_text=True)
-        self.assertIn(url, html)
+        self.assertIn(url, [r["url"] for r in store.get_staged_results_for_review()])
 
         result_id = store.get_run_results(run_id)[0]["id"]
         self.client.post(f"/components/serpapi/results/{result_id}/add")
-        html = self.client.get("/tools/filter_dedupe").get_data(as_text=True)
-        self.assertNotIn(url, html)  # now on the dashboard, no longer "staged for review"
+        # now on the dashboard, no longer up for manual "add anyway" review
+        self.assertNotIn(url, [r["url"] for r in store.get_staged_results_for_review()])
+        self.assertIn(url, {j["url"] for j in store.jobs})
+
+    def test_survivor_never_shown_in_filtered_out_list(self):
+        run_id = store.start_run("serpapi", "test")
+        store.profile["roles"] = ["Product Manager"]
+        store.save_profile()
+        url = "https://x.com/tool-page-survivor"
+        store.save_fetch_results(run_id, [{**LISTING, "url": url}])
+        self.client.post(f"/components/serpapi/runs/{run_id}/filter")
+
+        # Saved automatically - nothing left for manual review, but it does show up in the
+        # "Saved to dashboard" log further down the same page.
+        self.assertNotIn(url, [r["url"] for r in store.get_staged_results_for_review()])
+        self.assertIn(url, {j["url"] for j in store.jobs})
 
     def test_save_to_database_tool_id_removed(self):
         resp = self.client.get("/tools/save_to_database")

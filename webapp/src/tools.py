@@ -18,9 +18,10 @@ TOOLS = {
         "name": "Filter, dedupe & save",
         "description": "Hard-preference gate (role/title, location, remoteness, work "
                         "eligibility, salary floor) + dedup, run explicitly per fetch "
-                        "(a component's run() only fetches - see src/components/README.md) "
-                        "- then \"Add to dashboard\" on what survives inserts it into the "
-                        "jobs table. See src/filters.py.",
+                        "(a component's run() only fetches - see src/components/README.md). "
+                        "Whatever survives is saved to the jobs table automatically; "
+                        "whatever's dropped shows up for manual \"Add to dashboard\" if you "
+                        "want to override it. See src/filters.py.",
         "status": "live",
     },
     "extract_structure": {

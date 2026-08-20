@@ -320,17 +320,18 @@
   {% endfor %}
 
   <div class="hr"></div>
-  <h2>Staged for review</h2>
-  <p class="text-muted" style="font-size:12px;">Filtered results not yet on your dashboard - add the ones worth pursuing.</p>
+  <h2>Filtered out</h2>
+  <p class="text-muted" style="font-size:12px;">Dropped by the hard-preference gate or dedup - add anyway if one's still worth pursuing. Anything that passed is already on your dashboard.</p>
   <div class="table-wrap">
     <table class="table">
-      <thead><tr><th>Title</th><th>Company</th><th>Source</th><th>Run</th><th></th></tr></thead>
+      <thead><tr><th>Title</th><th>Company</th><th>Source</th><th>Reason</th><th>Run</th><th></th></tr></thead>
       <tbody>
         {% for r in staged_results %}
         <tr>
           <td><a href="{{ r.url }}" target="_blank" rel="noopener" style="color:var(--color-text);font-weight:600;text-decoration:none;">{{ r.title }}</a></td>
           <td>{{ r.company }}</td>
           <td class="text-muted" style="font-size:11px;">{{ r.source }}</td>
+          <td class="text-muted" style="font-size:11px;">{{ r.filter_reason }}</td>
           <td><a href="{{ url_for('component_detail', component_id=r.component_id, run=r.run_id) }}">#{{ r.run_id }}</a></td>
           <td>
             <form method="post" action="{{ url_for('component_result_add', component_id=r.component_id, result_id=r.id) }}">
@@ -342,7 +343,7 @@
       </tbody>
     </table>
     {% if not staged_results %}
-    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">Nothing staged right now.</div>
+    <div style="padding:var(--space-6);text-align:center;color:var(--color-neutral-700);">Nothing filtered out right now.</div>
     {% endif %}
   </div>
 

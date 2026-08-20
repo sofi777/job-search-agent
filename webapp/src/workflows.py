@@ -38,17 +38,9 @@ def run_job_search_rerank(mode="live"):
         except Exception as e:
             listings, error = [], str(e)
         store.save_fetch_results(run_id, listings, error)
-        store.apply_run_filters(run_id)
-
-        added = 0
-        for result in store.get_run_results(run_id):
-            if result["status"] != "kept":
-                continue
-            try:
-                store.add_run_result_to_dashboard(result["id"], component_id)
-                added += 1
-            except RuntimeError:
-                pass  # already on the dashboard (e.g. another component found it first) - not a failure
+        # apply_run_filters saves whatever survives straight to the jobs table and returns
+        # how many that was - the single source of truth, see src/store.py.
+        added = store.apply_run_filters(run_id)
         summary["per_component"][component_id] = {"fetched": len(listings), "added": added, "error": error}
         summary["added"] += added
 
