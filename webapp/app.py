@@ -313,7 +313,7 @@ def dashboard():
     if sort_key == "posted":
         jobs.sort(key=lambda j: j["posted"], reverse=reverse)
     elif sort_key == "match":
-        jobs.sort(key=lambda j: j.get("match", 0), reverse=reverse)
+        jobs.sort(key=lambda j: j.get("match") if j.get("match") is not None else -1, reverse=reverse)
     elif sort_key in ("company", "title", "status"):
         jobs.sort(key=lambda j: j[sort_key], reverse=reverse)
 
