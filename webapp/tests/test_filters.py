@@ -113,6 +113,21 @@ class HardFilterLocationTests(unittest.TestCase):
         self.assertEqual(kept, [])
         self.assertEqual(dropped[0][1], "outside commute range")
 
+    def test_onsite_job_kept_when_in_a_known_metro_suburb(self):
+        # Richmond/Surrey/etc are a normal Vancouver commute, not "outside commute range" -
+        # see filters._METRO_AREA_SUBURBS.
+        profile = {**PROFILE, "home_address": "Vancouver, Canada", "eligible_countries": ["Canada"]}
+        kept, _ = filters.apply_hard_filters(
+            [listing(remote=False, location="Richmond, BC, Canada")], profile)
+        self.assertEqual(len(kept), 1)
+
+    def test_onsite_job_dropped_when_outside_known_metro_suburbs(self):
+        profile = {**PROFILE, "home_address": "Vancouver, Canada", "eligible_countries": ["Canada"]}
+        kept, dropped = filters.apply_hard_filters(
+            [listing(remote=False, location="Victoria, BC, Canada")], profile)
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped[0][1], "outside commute range")
+
     def test_onsite_job_kept_when_home_address_unset(self):
         # No home city on file - nothing to gate the commute check on, stays unrestricted.
         profile = {**PROFILE, "home_address": ""}

@@ -16,9 +16,16 @@ callers that don't inspect it (onboarding, /scan, /data/reload) can't crash on i
 Score fit tool page is where the run log/errors are actually surfaced. Jobs scored before
 or after a skipped one still reach the dashboard - see db.fetch_latest_scores.
 """
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from . import agents, ai, store
+
+# Each score_job call is one blocking LLM request (~20-40s) - running them concurrently
+# instead of one-by-one is what makes a rerank of a real-sized job list take seconds
+# instead of minutes. Capped, not unbounded, to stay polite to the API and avoid hammering
+# free-tier rate limits with a burst of simultaneous requests.
+MAX_SCORE_WORKERS = 5
 
 
 def _document_text(doc_type):
@@ -56,17 +63,24 @@ def run_scan(mode="live", model=None, pending_only=False):
     jobs = [j for j in store.jobs if j["status"] not in store.TERMINAL_STATUSES] if pending_only else store.jobs
 
     scored, skipped = 0, []
-    for job in jobs:
-        try:
-            result = ai.score_job(job, resume_text, story_bank_text, industries, industries_text, model)
-        except Exception as e:
-            # ai.score_job already retried any transient network/SSL blip (see
-            # agents._post_with_backoff) - a failure here is a real one, so skip just this
-            # job and keep going rather than losing the rest of the batch to it.
-            skipped.append(f"{job['title']}: {e}")
-            continue
-        store.save_scoring_result(run_id, job["id"], result["score"], result["summary"])
-        scored += 1
+    with ThreadPoolExecutor(max_workers=min(MAX_SCORE_WORKERS, len(jobs)) or 1) as pool:
+        # Submit every job up front so they run concurrently, then collect in the original
+        # order - result order (and so the skipped/error-message order below) stays the
+        # same as a plain sequential loop regardless of which one actually finishes first.
+        futures = [(job, pool.submit(
+            ai.score_job, job, resume_text, story_bank_text, industries, industries_text, model,
+        )) for job in jobs]
+        for job, future in futures:
+            try:
+                result = future.result()
+            except Exception as e:
+                # ai.score_job already retried any transient network/SSL blip (see
+                # agents._post_with_backoff) - a failure here is a real one, so skip just
+                # this job and keep going rather than losing the rest of the batch to it.
+                skipped.append(f"{job['title']}: {e}")
+                continue
+            store.save_scoring_result(run_id, job["id"], result["score"], result["summary"])
+            scored += 1
 
     # "partial" (not "error") when at least one job scored despite others being skipped -
     # those results are real and must reach the dashboard (db.fetch_latest_scores reads

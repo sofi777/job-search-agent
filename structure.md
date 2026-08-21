@@ -142,10 +142,12 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   - the user has already decided on those, so nothing left to re-judge; skipped jobs keep
   their last score (`db.fetch_latest_scores` reads each job's most recent live score, not one
   run's full result set, so a partial rerun can't blank out jobs it didn't touch).
-  Every call logs a `scoring_runs` row regardless of caller, and never raises - a job that
-  keeps failing (`ai.score_job` already retried any transient network/SSL blip, see
-  `agents._post_with_backoff`) is skipped, not fatal to the batch: the loop moves on to
-  the next job instead of aborting the whole run. The run is recorded as `"partial"` if it
+  Jobs are scored concurrently (`ThreadPoolExecutor`, capped at `MAX_SCORE_WORKERS=5`) since
+  each `ai.score_job` call is one blocking LLM request - a rerank of a real-sized job list
+  used to take minutes running one score at a time. Every call logs a `scoring_runs` row
+  regardless of caller, and never raises - a job that keeps failing (`ai.score_job` already
+  retried any transient network/SSL blip, see `agents._post_with_backoff`) is skipped, not
+  fatal to the batch: the run moves on to the next job instead of aborting. The run is recorded as `"partial"` if it
   scored at least one job, `"error"` if it scored none, `error_message` naming every
   skipped job. `db.fetch_latest_scores` reads both `"ok"` and `"partial"` live runs, so
   jobs scored around a skipped one still reach the dashboard - only a run that scored

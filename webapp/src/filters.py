@@ -15,6 +15,17 @@ from .components import base
 # onsite location is by eligible_countries, since it's normal, not missing/bad data.
 _GENERIC_REMOTE_LOCATIONS = {"remote", "anywhere", "worldwide", "global", "not specified", ""}
 
+# Still just a text match, not real geocoding (commute_miles itself is never read - see
+# ISSUES.md's commute-radius gap) - but a bare city-name match calls every neighbouring
+# suburb "outside commute range" even when it's a normal commute in the same metro area.
+# Keyed by home city (lowercase); add more metros here as they come up.
+_METRO_AREA_SUBURBS = {
+    "vancouver": {
+        "richmond", "surrey", "burnaby", "coquitlam", "port coquitlam", "port moody",
+        "north vancouver", "west vancouver", "new westminster", "delta", "langley", "white rock",
+    },
+}
+
 
 def _home_city(profile):
     """First segment of home_address ("San Francisco, CA" -> "San Francisco"), or "" if unset.
@@ -26,10 +37,13 @@ def _city_match(home_city, location):
     """True if home_city and the listing's location plausibly name the same city - checked both
     ways since either side can carry extra words the other doesn't ("Vancouver, Canada" home
     address vs a bare "Vancouver" listing, or the reverse: "Greater Vancouver Area" vs
-    "Vancouver, BC"). A one-directional substring check misses whichever case is backwards."""
+    "Vancouver, BC") - or name a known suburb of it (see _METRO_AREA_SUBURBS). A one-directional
+    substring check misses whichever case is backwards."""
     home_city, location = home_city.lower(), location.lower()
     listing_city = location.split(",")[0].strip()
-    return home_city in location or (listing_city and listing_city in home_city)
+    if home_city in location or (listing_city and listing_city in home_city):
+        return True
+    return listing_city in _METRO_AREA_SUBURBS.get(home_city, set())
 
 
 def dedupe(listings):

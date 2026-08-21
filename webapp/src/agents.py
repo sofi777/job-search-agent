@@ -11,6 +11,7 @@ import os
 import re
 import socket
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -179,6 +180,12 @@ def _estimate_cost(model, usage):
     )
 
 
+_usage_log_lock = threading.Lock()  # scanner.run_scan scores jobs concurrently (see
+# scanner.MAX_SCORE_WORKERS), and this is a read-modify-write on one shared file - without a
+# lock, two calls landing at once would each read the same log and one's entry would clobber
+# the other's on write.
+
+
 def _log_usage(model, usage):
     """Append one entry to data/usage.json for every real LLM call - see CLAUDE.md's LLM
     usage tracking rule. send_chat is the single choke point every caller in this app goes
@@ -192,15 +199,16 @@ def _log_usage(model, usage):
         "total_tokens": usage.get("total_tokens", 0),
         "estimated_cost_usd": _estimate_cost(model, usage),
     }
-    try:
-        log = json.loads(USAGE_LOG_PATH.read_text()) if USAGE_LOG_PATH.exists() else []
-    except json.JSONDecodeError:
-        log = []
-    log.append(entry)
-    try:
-        USAGE_LOG_PATH.write_text(json.dumps(log, indent=2))
-    except OSError:
-        pass  # never let usage tracking break a real request
+    with _usage_log_lock:
+        try:
+            log = json.loads(USAGE_LOG_PATH.read_text()) if USAGE_LOG_PATH.exists() else []
+        except json.JSONDecodeError:
+            log = []
+        log.append(entry)
+        try:
+            USAGE_LOG_PATH.write_text(json.dumps(log, indent=2))
+        except OSError:
+            pass  # never let usage tracking break a real request
 
 
 def _post_with_backoff(messages, model, api_key):

@@ -98,8 +98,16 @@ class RunScanTests(unittest.TestCase):
 
     @mock.patch("src.ai.score_job")
     def test_a_failure_mid_run_is_recorded_as_partial_and_scored_jobs_reach_the_dashboard(self, score_job):
-        score_job.side_effect = [{"score": 80, "summary": "ok"}, RuntimeError("model unusable")]
+        # Jobs score concurrently now (see scanner.MAX_SCORE_WORKERS), so which one "fails"
+        # has to be picked by identity, not by call order.
         scored_job_id = store.jobs[0]["id"]
+
+        def score(job, *_args):
+            if job["id"] != scored_job_id:
+                raise RuntimeError("model unusable")
+            return {"score": 80, "summary": "ok"}
+
+        score_job.side_effect = score
 
         run_id = scanner.run_scan(mode="live")  # must not raise
 
@@ -123,10 +131,16 @@ class RunScanTests(unittest.TestCase):
 
     @mock.patch("src.ai.score_job")
     def test_a_persistently_failing_job_is_skipped_not_fatal_to_the_batch(self, score_job):
-        # First job fails for good (already-retried-by-agents error bubbling up), the rest
-        # succeed - the whole run must not stop after job 1 the way it used to.
-        results = [{"score": 91, "summary": "Great fit"}] * (len(store.jobs) - 1)
-        score_job.side_effect = [RuntimeError("model unusable")] + results
+        # One job fails for good (already-retried-by-agents error bubbling up), the rest
+        # succeed - the whole run must not stop because of it.
+        failing_job_id = store.jobs[0]["id"]
+
+        def score(job, *_args):
+            if job["id"] == failing_job_id:
+                raise RuntimeError("model unusable")
+            return {"score": 91, "summary": "Great fit"}
+
+        score_job.side_effect = score
 
         run_id = scanner.run_scan(mode="live")
 

@@ -4,6 +4,7 @@ profile fields. See tests/test_onboarding_upload_ui.py for the resume dropzone m
 """
 import io
 import unittest
+from unittest import mock
 
 from tests import db_setup  # noqa: F401  (side effect: redirects DB_PATH before store import)
 import app as flask_app
@@ -193,9 +194,16 @@ class OnboardingWizardTests(unittest.TestCase):
         self.client.post("/onboarding/salary", data={"min_salary": "", "currency": "USD"})
         self.assertEqual(_fresh_db_row()["min_salary"], 0)
 
-    def test_full_wizard_round_trip_persists_every_field(self):
+    @mock.patch("src.ai.score_job")
+    def test_full_wizard_round_trip_persists_every_field(self, score_job):
         """End-to-end: walk all five steps, then re-read the user row fresh from the DB - proof
-        every step's data survived, not just the in-memory store.profile dict."""
+        every step's data survived, not just the in-memory store.profile dict. Uploading a real
+        resume means the salary step's completion scan (scanner.run_scan) has one to score
+        against and actually calls out for real - mocked here since this test only cares about
+        onboarding fields persisting, not scoring, and the real call is otherwise a slow/flaky
+        network dependency for a "unit" test (see scanner.MAX_SCORE_WORKERS - concurrent free-tier
+        calls trip OpenRouter's rate limit far more easily than the old one-at-a-time calls did)."""
+        score_job.return_value = {"score": 50, "summary": "n/a"}
         self.client.post("/onboarding/resume", data={"resume": (io.BytesIO(GOOD_PDF), "resume.pdf")},
                           content_type="multipart/form-data")
         self.client.post("/onboarding/roles", data={"action": "add", "new_role": "Staff Engineer"})

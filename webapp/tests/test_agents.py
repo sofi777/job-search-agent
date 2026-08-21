@@ -3,8 +3,11 @@ OpenRouter network call mocked out (never hits the network in tests)."""
 import io
 import json
 import ssl
+import tempfile
 import unittest
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest import mock
 
 from src import agents
@@ -119,6 +122,21 @@ class PureHelperTests(unittest.TestCase):
         self.assertEqual(agents._retry_after_seconds('{"error": {"metadata": {"retry_after_seconds": 7}}}'), 7)
         self.assertIsNone(agents._retry_after_seconds("not json"))
         self.assertIsNone(agents._retry_after_seconds("{}"))
+
+    def test_log_usage_is_safe_under_concurrent_calls(self):
+        # scanner.run_scan now scores jobs concurrently (ThreadPoolExecutor), so several
+        # threads can call _log_usage at once - a plain unlocked read-modify-write would
+        # lose entries to a last-writer-wins race. Every call must still land.
+        call_count = 20
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(agents, "USAGE_LOG_PATH", Path(tmp) / "usage.json"):
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    list(pool.map(
+                        lambda i: agents._log_usage("m", {"prompt_tokens": i, "completion_tokens": 0, "total_tokens": i}),
+                        range(call_count),
+                    ))
+                log = json.loads(agents.USAGE_LOG_PATH.read_text())
+        self.assertEqual(len(log), call_count)
 
 
 class SendChatTests(unittest.TestCase):
