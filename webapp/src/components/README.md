@@ -47,9 +47,11 @@ flagged remote.
 
 No key needed for test mode - it returns fixture data and never calls SerpAPI.
 
-**Cost:** each query in your settings (plus the followed-companies query, if enabled) is
-one real SerpAPI search per run in live mode. Free tier is 250/month - keep an eye on
-how many queries you've configured before running live often.
+**Cost:** each query in your settings (plus the followed-companies query, if enabled) pages
+through every result SerpAPI has for it (following `next_page_token` until exhausted), so
+one query can spend more than one search against your quota. Free tier is 250/month -
+keep an eye on how many queries you've configured, and how broad each one is, before
+running live often.
 
 ## RemoteOK
 

@@ -135,6 +135,44 @@ class FetchQueryParamsTests(unittest.TestCase):
         self.assertEqual(len(listings), 2)
 
 
+class PaginationTests(unittest.TestCase):
+    def test_follows_next_page_token_until_exhausted(self):
+        q = {"terms": ["PM"], "match": "OR", "date_posted": "any", "employment_types": []}
+        pages = [
+            {"jobs_results": [{"title": "Job 1", "company_name": "Acme"}],
+             "serpapi_pagination": {"next_page_token": "tok1"}},
+            {"jobs_results": [{"title": "Job 2", "company_name": "Acme"}],
+             "serpapi_pagination": {"next_page_token": "tok2"}},
+            {"jobs_results": [{"title": "Job 3", "company_name": "Acme"}]},
+        ]
+        with patch("src.components.serpapi.base.fetch_json", side_effect=pages) as mock_fetch:
+            listings = serpapi._fetch_query(q, "fake-key")
+        self.assertEqual(mock_fetch.call_count, 3)
+        self.assertEqual([l["title"] for l in listings], ["Job 1", "Job 2", "Job 3"])
+        self.assertIn("next_page_token=tok2", mock_fetch.call_args_list[2][0][0])
+
+    def test_no_pagination_field_stops_after_one_page(self):
+        q = {"terms": ["PM"], "match": "OR", "date_posted": "any", "employment_types": []}
+        with patch("src.components.serpapi.base.fetch_json",
+                   return_value={"jobs_results": [{"title": "Job 1", "company_name": "Acme"}]}) as mock_fetch:
+            listings = serpapi._fetch_query(q, "fake-key")
+        self.assertEqual(mock_fetch.call_count, 1)
+        self.assertEqual(len(listings), 1)
+
+    def test_not_capped_follows_many_pages(self):
+        q = {"terms": ["PM"], "match": "OR", "date_posted": "any", "employment_types": []}
+        pages = [
+            {"jobs_results": [{"title": f"Job {i}", "company_name": "Acme"}],
+             "serpapi_pagination": {"next_page_token": f"tok{i}"}}
+            for i in range(5)
+        ]
+        pages.append({"jobs_results": [{"title": "Job 5", "company_name": "Acme"}]})
+        with patch("src.components.serpapi.base.fetch_json", side_effect=pages) as mock_fetch:
+            listings = serpapi._fetch_query(q, "fake-key")
+        self.assertEqual(mock_fetch.call_count, 6)
+        self.assertEqual(len(listings), 6)
+
+
 class RunTests(unittest.TestCase):
     def test_test_mode_returns_fixture_without_network_call(self):
         with patch("src.components.serpapi.base.fetch_json") as mock_fetch:

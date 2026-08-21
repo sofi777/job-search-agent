@@ -114,9 +114,15 @@ def _fetch_query(q, api_key):
     if work_mode == "remote":
         params["ltype"] = "1"
 
-    url = SERPAPI_URL + "?" + urllib.parse.urlencode(params)
-    data = base.fetch_json(url)
-    listings = [_to_listing(job, q.get("label", "Search")) for job in data.get("jobs_results", [])]
+    listings = []
+    while True:
+        url = SERPAPI_URL + "?" + urllib.parse.urlencode(params)
+        data = base.fetch_json(url)
+        listings += [_to_listing(job, q.get("label", "Search")) for job in data.get("jobs_results", [])]
+        next_token = data.get("serpapi_pagination", {}).get("next_page_token")
+        if not next_token:
+            break
+        params["next_page_token"] = next_token
     if work_mode == "local":
         listings = [l for l in listings if not l["remote"]]
     return listings

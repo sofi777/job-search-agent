@@ -424,20 +424,30 @@ FAKE_SERP_LISTINGS = [
 ]
 
 def _serp_fetch(params, source_label):
-    """Shared SerpAPI fetch helper with logging."""
+    """Shared SerpAPI fetch helper with logging. Follows next_page_token until exhausted."""
+    all_jobs = []
+    page_params = dict(params)
+    page_num = 1
     try:
-        response = requests.get("https://serpapi.com/search", params=params, timeout=20)
-        print(f"  {source_label} status: {response.status_code}", end="")
-        if response.status_code != 200:
-            print(f" — error: {response.text[:100]}")
-            return []
-        data = response.json()
-        jobs = data.get("jobs_results", [])
-        print(f" — {len(jobs)} results")
-        return jobs
+        while True:
+            response = requests.get("https://serpapi.com/search", params=page_params, timeout=20)
+            print(f"  {source_label} page {page_num} status: {response.status_code}", end="")
+            if response.status_code != 200:
+                print(f" — error: {response.text[:100]}")
+                break
+            data = response.json()
+            jobs = data.get("jobs_results", [])
+            print(f" — {len(jobs)} results")
+            all_jobs.extend(jobs)
+            next_token = data.get("serpapi_pagination", {}).get("next_page_token")
+            if not next_token:
+                break
+            page_params["next_page_token"] = next_token
+            page_num += 1
+        return all_jobs
     except Exception as e:
         print(f"\n  ❌ {source_label} error: {e}")
-        return []
+        return all_jobs
 
 def _best_apply_url(job: dict) -> str:
     """
