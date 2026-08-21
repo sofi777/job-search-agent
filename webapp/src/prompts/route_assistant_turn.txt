@@ -10,18 +10,30 @@ Latest message: "{message}"
 
 Available actions:
 {action_list}
-- "cover_letter": draft or revise a cover letter for a specific job.
-- "show_preferred": show the cover letter already marked "ready to send" for a specific
-  job - only when the user is asking to see/pull up/preview that saved/preferred/final
-  letter, not asking for a new draft.
+(if the user just wants their existing jobs ranked/reranked/scored, without asking to find,
+search for, or add new ones, pick the workflow that only rescores - never one that also
+fetches new listings)
 - "chat": anything else - a question, general conversation, or feedback on something already
-  shown (feedback on a draft belongs to "cover_letter" only if it's asking for a new
-  revision; otherwise treat it as "chat").
+  shown (feedback on a draft belongs to "cover_letter"/"resume"/"qa" only if it's asking for
+  a new revision; otherwise treat it as "chat").
+- "unclear": the message clearly wants you to DO something (not just chat or ask a question),
+  but it doesn't cleanly match one of the actions above, is missing something you'd need to
+  act (no job named and none active, no URL given), or asks for more than one action at once.
+  Prefer "unclear" over guessing at the closest action.
 
-If the action needs a job (cover_letter, show_preferred, or any workflow scoped to one job)
-and the message names one, put a short phrase identifying it (title/company/rank like "top
-job") in "job_query". Leave "job_query" null if no specific job is named or needed.
+If the action needs a job (cover_letter, resume, qa, show_preferred, job_status, or
+preference_learning scoped to one job) and the message names one, put a short phrase
+identifying it (title/company/rank like "top job") in "job_query". Leave "job_query" null if
+no specific job is named or needed - for preference_learning, null means "every job", not "the
+active job".
+
+If the action is "add_job_url", put the job posting URL from the message in "url". Else null.
+
+If the action is "job_status", put the target status in "status" - one of: applied, rejected,
+irrelevant, viewed. Else null.
 
 Reply with ONLY a JSON object, no markdown fences, no commentary, with exactly these keys:
 "action": one of the action ids listed above, exactly as written
 "job_query": a short phrase naming the job, or null
+"url": a job posting URL, or null
+"status": a job status, or null

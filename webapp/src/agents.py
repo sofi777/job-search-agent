@@ -9,6 +9,8 @@ and persist the results.
 import json
 import os
 import re
+import socket
+import ssl
 import time
 import urllib.error
 import urllib.request
@@ -24,6 +26,12 @@ DEFAULT_MODEL = "google/gemma-4-26b-a4b-it:free"
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 MAX_RATE_LIMIT_WAIT_SECONDS = 30
+# A flaky connection (dropped wifi/VPN mid-handshake) surfaces as ssl.SSLError or
+# urllib.error.URLError, not an HTTPError - OpenRouter never saw the request, so it's
+# worth a couple of quick retries rather than failing the whole call outright.
+TRANSIENT_ERROR_MAX_RETRIES = 2
+TRANSIENT_ERROR_BACKOFF_SECONDS = 2
+TRANSIENT_ERRORS = (ssl.SSLError, socket.error, urllib.error.URLError)
 # Generous on purpose: reasoning models spend tokens "thinking" before ever emitting the
 # reply, and the visible reply itself is JSON wrapping a few-hundred-word artifact - a too-low
 # cap truncates mid-generation, coming back either as content: null or, worse, a real-looking
@@ -196,17 +204,27 @@ def _log_usage(model, usage):
 
 
 def _post_with_backoff(messages, model, api_key):
-    """POST once, retrying a single time on 429 after OpenRouter's suggested wait (capped at
-    MAX_RATE_LIMIT_WAIT_SECONDS). Raises HTTPError - 429 or otherwise - if still failing
-    after that, unread, so the caller can inspect/fall back on it."""
-    try:
-        return _post(messages, model, api_key)
-    except urllib.error.HTTPError as e:
-        if e.code != 429:
-            raise
-        wait = min(_retry_after_seconds(e.read().decode()) or 5, MAX_RATE_LIMIT_WAIT_SECONDS)
-        time.sleep(wait)
-        return _post(messages, model, api_key)
+    """POST, retrying on two different kinds of failure:
+    - a transient network/SSL error (TRANSIENT_ERRORS) - the request never reached
+      OpenRouter, so it's retried up to TRANSIENT_ERROR_MAX_RETRIES times with a short
+      fixed backoff.
+    - a 429, retried once after OpenRouter's suggested wait (capped at
+      MAX_RATE_LIMIT_WAIT_SECONDS).
+    Raises the last error - HTTPError or a transient one - if still failing, unread, so
+    the caller can inspect/fall back on it."""
+    for attempt in range(TRANSIENT_ERROR_MAX_RETRIES + 1):
+        try:
+            return _post(messages, model, api_key)
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                raise
+            wait = min(_retry_after_seconds(e.read().decode()) or 5, MAX_RATE_LIMIT_WAIT_SECONDS)
+            time.sleep(wait)
+            return _post(messages, model, api_key)
+        except TRANSIENT_ERRORS:
+            if attempt == TRANSIENT_ERROR_MAX_RETRIES:
+                raise
+            time.sleep(TRANSIENT_ERROR_BACKOFF_SECONDS)
 
 
 def send_chat(messages, model=DEFAULT_MODEL):
@@ -216,8 +234,9 @@ def send_chat(messages, model=DEFAULT_MODEL):
     OpenRouter's {"prompt_tokens", "completion_tokens", "total_tokens", ...} dict, or {} if the
     response didn't include one.
 
-    Retries once on a 429 (rate limit) per model, waiting however long OpenRouter says to
-    (see _post_with_backoff). If `model` is one of FREE_MODELS and still rate-limited after
+    Retries transient network/SSL errors (see TRANSIENT_ERROR_MAX_RETRIES) and, once on a
+    429 (rate limit) per model, waiting however long OpenRouter says to (see
+    _post_with_backoff). If `model` is one of FREE_MODELS and still rate-limited after
     that, or its reply is unusable (empty / cut off by the MAX_TOKENS cap - see UnusableReply
     below), falls back through FREE_MODEL_PRIORITY in order (skipping `model` itself) -
     OpenRouter's free tier gets rate-limited per-model, not per-account, and free models vary
@@ -247,6 +266,15 @@ def send_chat(messages, model=DEFAULT_MODEL):
 
         _log_last_call(messages, candidate, data)
         _log_usage(candidate, data.get("usage") or {})
+
+        if not data.get("choices"):
+            # A 200 response missing "choices" - seen on OpenRouter free-tier hiccups where
+            # the body is an error payload instead of a completion. Same fallback path as an
+            # unusable reply rather than a raw KeyError, so one bad response doesn't crash a
+            # whole calling loop (e.g. scanner.run_scan scoring several jobs in a row).
+            detail = (data.get("error") or {}).get("message") or "no choices in response"
+            last_error = UnusableReply(f"{candidate} returned an unusable reply ({detail}).")
+            continue
 
         choice = data["choices"][0]
         content = choice["message"]["content"]
@@ -595,32 +623,36 @@ def _format_history_text(history):
     return "\n".join(f"{m['role']}: {m['content']}" for m in trim_history(history))
 
 
-def route_assistant_turn(message, history, active_job, live_workflows):
+def route_assistant_turn(message, history, active_job, actions):
     """Classify one assistant-widget turn - same "prompt -> parsed JSON -> Python
     dispatches" shape as classify_turn. `active_job` is {"title", "company"} or None.
-    `live_workflows` is [{"id", "name", "description"}, ...], built from workflows.WORKFLOWS
-    entries with status == "live" - the only workflow ids the model may return; wiring up a
-    new workflow's runner later makes it routable automatically, no change needed here.
+    `actions` is [{"id", "name", "description"}, ...] - every action the model may pick,
+    built by src.assistant from live workflows.WORKFLOWS entries plus its own fixed-action
+    catalogue; wiring up a new workflow's runner later makes it routable automatically, no
+    change needed here.
 
-    Returns {"action": one of live_workflows' ids, "chat", "cover_letter", or "show_preferred",
-             "job_query": short phrase naming the job this turn is about, or None}.
+    Returns {"action": one of `actions`' ids, "chat", or "unclear",
+             "job_query": short phrase naming the job this turn is about, or None,
+             "url": a job posting URL (only meaningful for "add_job_url"), or None,
+             "status": a job status (only meaningful for "job_status"), or None}.
 
-    Defaults to {"action": "chat", "job_query": None} on any failure (RuntimeError, an
+    Defaults to {"action": "chat", ...all else None} on any failure (RuntimeError, an
     unparseable reply, or an action id outside the allowed set) - unlike classify_turn's
     "default to the safe-to-over-trigger option" bias, wrongly firing a paid workflow or an
     unwanted document draft is the unsafe direction here, so the inert action is the only
-    safe default.
+    safe default. "unclear" is a deliberate model choice (message clearly wants an action but
+    doesn't cleanly match one), not a failure fallback - see route_assistant_turn.txt.
     """
-    allowed_actions = {w["id"] for w in live_workflows} | {"chat", "cover_letter", "show_preferred"}
-    fallback = {"action": "chat", "job_query": None}
+    allowed_actions = {a["id"] for a in actions} | {"chat", "unclear"}
+    fallback = {"action": "chat", "job_query": None, "url": None, "status": None}
 
-    action_list = "\n".join(f'- "{w["id"]}": {w["description"]}' for w in live_workflows)
+    action_list = "\n".join(f'- "{a["id"]}": {a["description"]}' for a in actions)
     active_job_line = f"{active_job['title']} at {active_job['company']}" if active_job else "(none)"
     prompt = _load_prompt("route_assistant_turn.txt").format(
         history_text=_format_history_text(history),
         active_job_line=active_job_line,
         message=message,
-        action_list=action_list or "(no workflows currently available)",
+        action_list=action_list or "(none currently available)",
     )
     try:
         reply, _used_model, _usage = send_chat([{"role": "user", "content": prompt}], DEFAULT_MODEL)
@@ -631,4 +663,9 @@ def route_assistant_turn(message, history, active_job, live_workflows):
     action = data.get("action")
     if action not in allowed_actions:
         return fallback
-    return {"action": action, "job_query": data.get("job_query") or None}
+    return {
+        "action": action,
+        "job_query": data.get("job_query") or None,
+        "url": data.get("url") or None,
+        "status": data.get("status") or None,
+    }

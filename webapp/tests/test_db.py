@@ -395,18 +395,32 @@ class ScoringRunTests(DbTestCase):
             skipped_id: {"score": 60, "summary": "first pass"},
         })
 
-    def test_fetch_latest_scores_ignores_test_mode_and_failed_runs(self):
+    def test_fetch_latest_scores_ignores_test_mode_and_scoreless_failed_runs(self):
         job_id = make_job("https://x.com/1")
 
         test_run = db.insert_scoring_run("t1", "test", "m")
         db.insert_scoring_result(test_run, job_id, 75, "fixture")
         db.finish_scoring_run(test_run, "t1b", "ok", 1)
 
+        # a run marked "error" with scored_count 0 (e.g. no resume, or the first job failed)
+        # never inserts a scoring_run_results row for it in practice, but even if one existed
+        # it must still be ignored - "error" means nothing from this run is trustworthy.
         failed_run = db.insert_scoring_run("t2", "live", "m")
         db.insert_scoring_result(failed_run, job_id, 10, "partial")
-        db.finish_scoring_run(failed_run, "t2b", "error", 1, "boom")
+        db.finish_scoring_run(failed_run, "t2b", "error", 0, "boom")
 
         self.assertEqual(db.fetch_latest_scores(), {})
+
+    def test_fetch_latest_scores_includes_partial_runs(self):
+        # scanner.run_scan marks a run "partial" (not "error") when a mid-run failure still
+        # scored some jobs first - those results are real and must reach the dashboard.
+        job_id = make_job("https://x.com/1")
+
+        partial_run = db.insert_scoring_run("t1", "live", "m")
+        db.insert_scoring_result(partial_run, job_id, 65, "scored before the run broke")
+        db.finish_scoring_run(partial_run, "t1b", "partial", 1, "boom")
+
+        self.assertEqual(db.fetch_latest_scores(), {job_id: {"score": 65, "summary": "scored before the run broke"}})
 
     def test_fetch_latest_scores_empty_when_no_runs(self):
         self.assertEqual(db.fetch_latest_scores(), {})

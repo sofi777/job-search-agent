@@ -75,6 +75,28 @@ class HandleTurnWorkflowTests(unittest.TestCase):
         router.assert_called_once()
         chat_call.assert_not_called()  # deterministic reply, no second LLM call
 
+    def test_rescore_jobs_action_only_rescores_no_sourcing(self):
+        # "rank/rerank the jobs" must route to the rescore-only workflow, not
+        # job_search_rerank (which would fetch and add new listings the user never asked for).
+        summary = {"scan_run_id": 7, "rescored": 4, "scan_error": None}
+        rescore_run = mock.Mock(return_value=summary)
+        job_search_run = mock.Mock()
+        with mock.patch(
+            "src.agents.route_assistant_turn", return_value={"action": "rescore_jobs", "job_query": None}
+        ), mock.patch("src.workflows.WORKFLOWS", {
+            "rescore_jobs": {**assistant.workflows.WORKFLOWS["rescore_jobs"], "run": rescore_run},
+            "job_search_rerank": {**assistant.workflows.WORKFLOWS["job_search_rerank"], "run": job_search_run},
+        }), mock.patch("src.agents.answer_assistant_message") as chat_call:
+            resp = self.client.post("/assistant/message", json={"message": "rerank the jobs"})
+
+        self.assertEqual(resp.status_code, 200)
+        reply = resp.get_json()["assistant_message"]["content"]
+        self.assertIn("4", reply)
+        self.assertNotIn("Added", reply)
+        rescore_run.assert_called_once()
+        job_search_run.assert_not_called()
+        chat_call.assert_not_called()
+
 
 class ResolveJobTests(unittest.TestCase):
     JOBS = [
@@ -202,6 +224,213 @@ class HandleTurnCoverLetterTests(unittest.TestCase):
             resp = self.client.post("/assistant/message", json={"message": "make it shorter"})
         self.assertEqual(resp.get_json()["assistant_message"]["job_id"], self.job["id"])
         self.assertEqual(len(store.get_chat_sessions(self.job["id"], "cover_letter")), 1)  # same session reused
+
+
+class HandleTurnResumeQaTests(unittest.TestCase):
+    """resume/qa share _handle_tailoring_turn with cover_letter (see
+    HandleTurnCoverLetterTests) - these just confirm each tab routes independently and
+    lands in its own session, not cover_letter's."""
+
+    def setUp(self):
+        self.client = flask_app.app.test_client()
+        self.client.post("/login")
+        self.job = store.jobs[0]
+
+    def tearDown(self):
+        for tab in ("cover_letter", "resume", "qa"):
+            for s in store.get_chat_sessions(self.job["id"], tab):
+                store.remove_chat_session(s["id"])
+
+    def _mock_generation(self, action, artifact="Some content"):
+        return (
+            mock.patch(
+                "src.agents.route_assistant_turn",
+                return_value={"action": action, "job_query": self.job["company"]},
+            ),
+            mock.patch("src.agents.classify_turn", return_value={"needs_retrieval": False, "reveals_preference": False}),
+            mock.patch(
+                "src.agents.run_tailor_turn",
+                return_value=({"reply": "Here you go.", "artifact": artifact}, "m", {"prompt_tokens": 1, "completion_tokens": 1}),
+            ),
+        )
+
+    def test_resume_action_creates_its_own_session(self):
+        p1, p2, p3 = self._mock_generation("resume", artifact="Resume text")
+        with p1, p2, p3:
+            resp = self.client.post("/assistant/message", json={"message": f"draft a resume for the {self.job['company']} job"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["assistant_message"]["artifact_text"], "Resume text")
+        self.assertEqual(len(store.get_chat_sessions(self.job["id"], "resume")), 1)
+        self.assertEqual(len(store.get_chat_sessions(self.job["id"], "cover_letter")), 0)
+
+    def test_qa_action_creates_its_own_session(self):
+        p1, p2, p3 = self._mock_generation("qa", artifact="Q: ...\nA: ...")
+        with p1, p2, p3:
+            resp = self.client.post("/assistant/message", json={"message": f"draft Q&A answers for the {self.job['company']} job"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(store.get_chat_sessions(self.job["id"], "qa")), 1)
+
+    def test_unresolvable_job_asks_for_clarification(self):
+        with mock.patch(
+            "src.agents.route_assistant_turn",
+            return_value={"action": "resume", "job_query": "a job that does not exist anywhere"},
+        ), mock.patch("src.agents.run_tailor_turn") as run_tailor_turn:
+            resp = self.client.post("/assistant/message", json={"message": "draft a resume for that job"})
+        self.assertEqual(resp.status_code, 200)
+        run_tailor_turn.assert_not_called()
+
+
+class HandleTurnJobStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.client = flask_app.app.test_client()
+        self.client.post("/login")
+        self.job = store.jobs[0]
+        self._original_status = self.job["status"]
+
+    def tearDown(self):
+        store.update_job_progress(self.job["id"], status=self._original_status)
+
+    def test_marks_status_by_name(self):
+        with mock.patch(
+            "src.agents.route_assistant_turn",
+            return_value={"action": "job_status", "job_query": self.job["company"], "status": "applied"},
+        ):
+            resp = self.client.post("/assistant/message", json={"message": f"mark {self.job['company']} as applied"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("applied", resp.get_json()["assistant_message"]["content"])
+        self.assertEqual(store.get_job(self.job["id"])["status"], "applied")
+
+    def test_unrecognized_status_is_not_written(self):
+        with mock.patch(
+            "src.agents.route_assistant_turn",
+            return_value={"action": "job_status", "job_query": self.job["company"], "status": "ghosted"},
+        ):
+            resp = self.client.post("/assistant/message", json={"message": f"mark {self.job['company']} as ghosted"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("recognize", resp.get_json()["assistant_message"]["content"])
+        self.assertEqual(store.get_job(self.job["id"])["status"], self._original_status)
+
+    def test_no_status_given_asks_for_one(self):
+        with mock.patch(
+            "src.agents.route_assistant_turn",
+            return_value={"action": "job_status", "job_query": self.job["company"], "status": None},
+        ):
+            resp = self.client.post("/assistant/message", json={"message": f"update {self.job['company']}"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(store.get_job(self.job["id"])["status"], self._original_status)
+
+    def test_no_job_named_or_active_asks_for_clarification(self):
+        # Force "no active job" regardless of what earlier tests in this module left active -
+        # store.get_active_job_id persists across tests sharing the session DB (see
+        # tests/db_setup.py), so this can't just rely on a fresh state.
+        with mock.patch(
+            "src.agents.route_assistant_turn",
+            return_value={"action": "job_status", "job_query": None, "status": "applied"},
+        ), mock.patch("src.store.get_active_job_id", return_value=None):
+            resp = self.client.post("/assistant/message", json={"message": "mark it as applied"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Which job", resp.get_json()["assistant_message"]["content"])
+
+
+class HandleTurnAddJobUrlTests(unittest.TestCase):
+    def setUp(self):
+        self.client = flask_app.app.test_client()
+        self.client.post("/login")
+
+    def test_adds_job_from_extracted_fields(self):
+        fields = {
+            "company": "Chat Co", "title": "Chat-Added Role", "source": "Direct link",
+            "location": "Remote", "remote": True, "posted": "2026-01-01",
+            "salary_min": 0, "salary_max": 0, "currency": "USD", "description": "",
+            "url": "https://example.com/chat-add-test-1",
+        }
+        with mock.patch(
+            "src.agents.route_assistant_turn",
+            return_value={"action": "add_job_url", "url": fields["url"]},
+        ), mock.patch("src.ai.extract_job_posting", return_value=fields) as extract:
+            resp = self.client.post("/assistant/message", json={"message": f"add this job: {fields['url']}"})
+        self.assertEqual(resp.status_code, 200)
+        reply = resp.get_json()["assistant_message"]["content"]
+        self.assertIn("Chat-Added Role", reply)
+        self.assertIn("Chat Co", reply)
+        extract.assert_called_once_with(fields["url"])
+        self.assertTrue(store.job_url_exists(fields["url"]))
+
+    def test_duplicate_url_is_not_re_added(self):
+        existing_url = store.jobs[0]["url"]
+        with mock.patch(
+            "src.agents.route_assistant_turn", return_value={"action": "add_job_url", "url": existing_url}
+        ), mock.patch("src.ai.extract_job_posting") as extract:
+            resp = self.client.post("/assistant/message", json={"message": f"add {existing_url}"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("already", resp.get_json()["assistant_message"]["content"])
+        extract.assert_not_called()
+
+    def test_extraction_failure_becomes_visible_reply(self):
+        with mock.patch(
+            "src.agents.route_assistant_turn",
+            return_value={"action": "add_job_url", "url": "https://example.com/bad-posting"},
+        ), mock.patch("src.ai.extract_job_posting", side_effect=RuntimeError("Could not fetch that page")):
+            resp = self.client.post("/assistant/message", json={"message": "add https://example.com/bad-posting"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Could not fetch", resp.get_json()["assistant_message"]["content"])
+
+    def test_no_url_extracted_asks_for_one(self):
+        with mock.patch(
+            "src.agents.route_assistant_turn", return_value={"action": "add_job_url", "url": None}
+        ), mock.patch("src.ai.extract_job_posting") as extract:
+            resp = self.client.post("/assistant/message", json={"message": "add a job for me"})
+        self.assertEqual(resp.status_code, 200)
+        extract.assert_not_called()
+
+
+class HandleTurnPreferenceLearningTests(unittest.TestCase):
+    def setUp(self):
+        self.client = flask_app.app.test_client()
+        self.client.post("/login")
+
+    def test_no_job_named_scopes_to_everything(self):
+        with mock.patch(
+            "src.agents.route_assistant_turn",
+            return_value={"action": "preference_learning", "job_query": None},
+        ):
+            resp = self.client.post("/assistant/message", json={"message": "what have you learned from my feedback?"})
+        self.assertEqual(resp.status_code, 200)
+        reply = resp.get_json()["assistant_message"]["content"]
+        self.assertIn("your feedback message", reply)
+        self.assertIsNone(resp.get_json()["assistant_message"]["job_id"])
+
+    def test_job_named_scopes_to_that_job(self):
+        job = store.jobs[0]
+        with mock.patch(
+            "src.agents.route_assistant_turn",
+            return_value={"action": "preference_learning", "job_query": job["company"]},
+        ):
+            resp = self.client.post(
+                "/assistant/message", json={"message": f"what have you learned from feedback on {job['company']}?"}
+            )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()["assistant_message"]
+        self.assertIn("that job's feedback message", data["content"])
+        self.assertEqual(data["job_id"], job["id"])
+
+
+class HandleTurnUnclearTests(unittest.TestCase):
+    def setUp(self):
+        self.client = flask_app.app.test_client()
+        self.client.post("/login")
+
+    def test_unclear_action_lists_available_actions_no_chat_call(self):
+        with mock.patch(
+            "src.agents.route_assistant_turn", return_value={"action": "unclear", "job_query": None}
+        ), mock.patch("src.agents.answer_assistant_message") as chat_call:
+            resp = self.client.post("/assistant/message", json={"message": "add this url and rerank"})
+        self.assertEqual(resp.status_code, 200)
+        reply = resp.get_json()["assistant_message"]["content"]
+        self.assertIn("Not sure", reply)
+        for a in assistant.FIXED_ACTIONS:
+            self.assertIn(a["name"], reply)
+        chat_call.assert_not_called()
 
 
 class AssistantHistoryAndModelTests(unittest.TestCase):

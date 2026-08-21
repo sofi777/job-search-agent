@@ -2,6 +2,7 @@
 OpenRouter network call mocked out (never hits the network in tests)."""
 import io
 import json
+import ssl
 import unittest
 import urllib.error
 from unittest import mock
@@ -160,10 +161,62 @@ class SendChatTests(unittest.TestCase):
             with self.assertRaisesRegex(agents.UnusableReply, "cut off"):
                 agents.send_message("hello", model="openai/gpt-4o-mini")
 
+    def test_missing_choices_raises_unusable_reply(self):
+        # A 200 whose body is an error payload instead of a completion (seen on OpenRouter
+        # free-tier hiccups) - must not crash with a raw KeyError.
+        response = {"error": {"message": "upstream provider error"}}
+        with mock.patch.object(agents, "_post", return_value=response), \
+             mock.patch.object(agents, "_log_last_call"), mock.patch.object(agents, "_log_usage"):
+            with self.assertRaisesRegex(agents.UnusableReply, "upstream provider error"):
+                agents.send_message("hello", model="openai/gpt-4o-mini")
+
+    def test_free_model_falls_back_on_missing_choices(self):
+        first_model = agents.FREE_MODEL_PRIORITY[0]
+
+        def fake_post(messages, model, api_key):
+            if model == first_model:
+                return {"error": {"message": "upstream provider error"}}
+            return {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        with mock.patch.object(agents, "_post", side_effect=fake_post), \
+             mock.patch.object(agents, "_log_last_call"), mock.patch.object(agents, "_log_usage"):
+            content, used_model, _usage = agents.send_message("hi", model=first_model)
+
+        self.assertEqual(content, "ok")
+        self.assertNotEqual(used_model, first_model)
+        self.assertIn(used_model, agents.FREE_MODEL_PRIORITY)
+
     def test_non_rate_limit_http_error_raises_runtime_error(self):
         with mock.patch.object(agents, "_post", side_effect=http_error(500, '{"error": {"message": "boom"}}')):
             with self.assertRaises(RuntimeError):
                 agents.send_message("hello", model="openai/gpt-4o-mini")
+
+    def test_transient_ssl_error_retries_then_succeeds(self):
+        response = {
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        # Fails twice with a transient SSL error, succeeds on the third attempt - within
+        # TRANSIENT_ERROR_MAX_RETRIES, so send_message must not raise.
+        with mock.patch.object(
+            agents, "_post", side_effect=[ssl.SSLError("SSLV3_ALERT_BAD_RECORD_MAC"), ssl.SSLError("boom"), response]
+        ), mock.patch.object(agents, "_log_last_call"), mock.patch.object(agents, "_log_usage"), \
+             mock.patch.object(agents.time, "sleep"):
+            content, used_model, _usage = agents.send_message("hello", model="openai/gpt-4o-mini")
+
+        self.assertEqual(content, "ok")
+        self.assertEqual(used_model, "openai/gpt-4o-mini")
+
+    def test_transient_ssl_error_raises_after_exhausting_retries(self):
+        with mock.patch.object(agents, "_post", side_effect=ssl.SSLError("SSLV3_ALERT_BAD_RECORD_MAC")) as mock_post, \
+             mock.patch.object(agents.time, "sleep"):
+            with self.assertRaises(ssl.SSLError):
+                agents.send_message("hello", model="openai/gpt-4o-mini")
+
+        self.assertEqual(mock_post.call_count, agents.TRANSIENT_ERROR_MAX_RETRIES + 1)
 
     def test_free_model_falls_back_on_rate_limit(self):
         first_model = agents.FREE_MODEL_PRIORITY[0]
@@ -237,6 +290,39 @@ class SendChatTests(unittest.TestCase):
             with self.assertRaises(agents.UnusableReply):
                 agents.send_message("hi", model="openai/gpt-4o-mini")
         mock_post.assert_called_once()
+
+
+class RouteAssistantTurnTests(unittest.TestCase):
+    ACTIONS = [
+        {"id": "rescore_jobs", "name": "Rerank existing jobs", "description": "rescores what's on the dashboard."},
+        {"id": "job_status", "name": "Mark a job's status", "description": "applied/rejected/irrelevant/viewed."},
+    ]
+
+    def _reply(self, payload):
+        return json.dumps(payload), agents.DEFAULT_MODEL, {}
+
+    def test_valid_action_with_url_and_status_round_trips(self):
+        payload = {"action": "job_status", "job_query": "the Notion job", "status": "applied", "url": None}
+        with mock.patch.object(agents, "send_chat", return_value=self._reply(payload)):
+            result = agents.route_assistant_turn("mark it applied", [], None, self.ACTIONS)
+        self.assertEqual(result, {"action": "job_status", "job_query": "the Notion job", "url": None, "status": "applied"})
+
+    def test_unclear_is_a_valid_action_even_though_not_in_the_list(self):
+        payload = {"action": "unclear", "job_query": None, "url": None, "status": None}
+        with mock.patch.object(agents, "send_chat", return_value=self._reply(payload)):
+            result = agents.route_assistant_turn("do the thing", [], None, self.ACTIONS)
+        self.assertEqual(result["action"], "unclear")
+
+    def test_action_outside_allowed_set_falls_back_to_chat(self):
+        payload = {"action": "delete_everything", "job_query": None, "url": None, "status": None}
+        with mock.patch.object(agents, "send_chat", return_value=self._reply(payload)):
+            result = agents.route_assistant_turn("do something unsupported", [], None, self.ACTIONS)
+        self.assertEqual(result, {"action": "chat", "job_query": None, "url": None, "status": None})
+
+    def test_send_chat_failure_falls_back_to_chat(self):
+        with mock.patch.object(agents, "send_chat", side_effect=RuntimeError("down")):
+            result = agents.route_assistant_turn("hi", [], None, self.ACTIONS)
+        self.assertEqual(result, {"action": "chat", "job_query": None, "url": None, "status": None})
 
 
 if __name__ == "__main__":

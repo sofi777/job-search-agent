@@ -43,10 +43,13 @@ Tracked here so they don't get lost. Check off and remove once fixed.
   scale up.
 - [ ] **Floating assistant has no confirmation step or rate limit on actions.**
   `src/assistant.py`'s router can fire `workflows.run_job_search_rerank` (spends
-  OpenRouter + SerpAPI credits, mutates the dashboard) or draft/revise a cover letter
-  from a single freeform chat message, with no "are you sure" and nothing stopping a
-  message (or a script hitting `POST /assistant/message` directly) from triggering it
-  repeatedly. Not a blocker for single-user localhost use - matches how the existing
-  `/scan` button and tailoring chat already work, no confirmation pattern exists
-  anywhere else in the app either - but worth adding before any public deploy, same as
-  the fake-login/hardcoded-secret entries above.
+  OpenRouter + SerpAPI credits, mutates the dashboard), draft/revise a cover
+  letter/resume/Q&A answers, change a job's status, add a job by URL (fetches an
+  arbitrary user-supplied URL server-side, same as the dashboard's "Add Job Posting"
+  popup), or run preference learning - all from a single freeform chat message, with no
+  "are you sure" and nothing stopping a message (or a script hitting `POST
+  /assistant/message` directly) from triggering any of it repeatedly. Not a blocker for
+  single-user localhost use - matches how the existing `/scan` button, "Add Job Posting"
+  popup, and tailoring chat already work, no confirmation pattern exists anywhere else in
+  the app either - but worth adding before any public deploy, same as the
+  fake-login/hardcoded-secret entries above.

@@ -38,7 +38,11 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   live workflow id, `"cover_letter"`, or `"chat"`, same JSON-in/JSON-out shape as
   `classify_turn`, defaults to `"chat"` on any failure since misrouting into a paid
   workflow/unwanted draft is the unsafe direction). Every real LLM call in the app goes
-  through `send_chat` - see CLAUDE.md's LLM usage tracking rule.
+  through `send_chat` - see CLAUDE.md's LLM usage tracking rule. `_post_with_backoff`
+  retries a transient network/SSL error (dropped wifi/VPN mid-handshake, e.g.
+  `SSLV3_ALERT_BAD_RECORD_MAC` - the request never reached OpenRouter) up to
+  `TRANSIENT_ERROR_MAX_RETRIES` times with a short fixed backoff, separately from its
+  existing single 429 retry.
 - **`src/tailoring.py`** - `run_turn(chat_session, job, display_message, preferences)`:
   one full tailoring-chat turn (classify -> retrieve -> generate -> persist -> learn).
   Extracted from `app.py`'s `_run_pane_turn` so it's shared verbatim by the per-job
@@ -59,27 +63,54 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   `get_or_create_cover_letter_session` prefers that job's marked session over the plain
   "first pane" default once one exists, so chat-driven feedback keeps landing on it.
 - **`src/assistant.py`** - the floating assistant's orchestrator: one continuous global
-  thread (not scoped to a job or a "pane", see `assistant_messages` below).
-  `handle_turn(message, model)` calls `agents.route_assistant_turn` then dispatches to a
-  live workflow (`workflows.WORKFLOWS[action]["run"]`, reply composed deterministically
-  in Python from the summary, no second LLM call), `"cover_letter"` (`resolve_job` +
-  `get_or_create_cover_letter_session` + `tailoring.run_turn`, mirrored into this thread
-  with `linked_chat_message_id` pointing at the real `chat_messages` row so the widget's
-  rating buttons hit the existing `/messages/<id>/rate` route), `"show_preferred"`
-  (`_handle_show_preferred_turn` - a plain `store.get_preferred_cover_letter` lookup, no
-  LLM generation call, mirrored the same way but without `linked_chat_message_id` since
-  it's a read, not a turn), or plain chat (`agents.answer_assistant_message`).
+  thread (not scoped to a job or a "pane", see `assistant_messages` below). Every action
+  it can dispatch to is code-backed - `workflows.WORKFLOWS`'s live entries plus
+  `FIXED_ACTIONS` (its own catalogue: `cover_letter`/`resume`/`qa`/`show_preferred`/
+  `job_status`/`add_job_url`/`preference_learning`) - the two combined are both what's fed
+  to `agents.route_assistant_turn`'s prompt and what's shown back to the user on
+  `"unclear"` (see below), so the model is never told about a capability that isn't real.
+  `handle_turn(message, model)` calls `agents.route_assistant_turn` then dispatches to:
+  - a live workflow (`workflows.WORKFLOWS[action]["run"]`, reply composed
+    deterministically in Python from the summary, no second LLM call)
+  - `"cover_letter"`/`"resume"`/`"qa"` (`_handle_tailoring_turn`, shared by all three -
+    `resolve_job` + `_get_or_create_tailor_session` + `tailoring.run_turn`, mirrored into
+    this thread with `linked_chat_message_id` pointing at the real `chat_messages` row so
+    the widget's rating buttons hit the existing `/messages/<id>/rate` route; each tab
+    keeps its own session, resolved independently)
+  - `"show_preferred"` (`_handle_show_preferred_turn` - a plain
+    `store.get_preferred_cover_letter` lookup, no LLM generation call, mirrored the same
+    way but without `linked_chat_message_id` since it's a read, not a turn)
+  - `"job_status"` (`_handle_job_status_turn` - `store.update_job_progress`, same write
+    the dashboard's status control uses; the extracted `status` is validated against
+    `store.JOB_STATUSES` before writing, never trusted blindly)
+  - `"add_job_url"` (`_handle_add_job_url_turn` - `ai.extract_job_posting` +
+    `store.add_custom_job`, same path as app.py's `job_add` route)
+  - `"preference_learning"` (`_handle_preference_learning_turn` - `learning.run_learning`,
+    live mode; scoped to a named job or, with no job named, every job - no active-job
+    fallback here unlike the tailoring actions, since "what have you learned" means
+    "everything" by default)
+  - `"unclear"` (`_clarify_action_reply` - a deterministic "here's what I can help with"
+    listing built from the same live-workflows + `FIXED_ACTIONS` catalogue, not restated
+    by the model; the model is instructed to prefer this over guessing when a message
+    wants an action done but doesn't cleanly match one, is missing something needed (no
+    job/URL), or asks for more than one action at once - there's no multi-action chaining
+    yet, so a combined ask like "add this job and rerank" needs two turns)
+  - plain chat (`agents.answer_assistant_message`) for everything else
+
   `resolve_job(job_query, jobs)` is a deterministic (no LLM) match against `store.jobs` -
   rank phrases ("top job", "#2") or a title/company substring match; ambiguous/no match
-  returns candidates instead of guessing. Job continuity: if a turn doesn't name a job,
-  falls back to `store.get_active_job_id()` (the most recent job any prior turn
-  discussed, skipping job-agnostic turns like a workflow run). `get_or_create_cover_
-  letter_session` retargets an existing session's model in place (`store.
-  set_session_model`, not the fork-aware `store.switch_session_model` built for
-  Tailor-page compare panes) so switching models in the widget never forks/resets the
-  conversation; if the job has a cover letter marked preferred (see below), that
-  session always wins over the plain "first pane" default, so chat feedback after
-  showing/drafting the preferred letter keeps revising that exact one.
+  returns candidates instead of guessing (`_clarify_job_reply`, parameterized per caller
+  with what to ask). Job continuity: if a turn doesn't name a job, falls back to
+  `store.get_active_job_id()` (the most recent job any prior turn discussed, skipping
+  job-agnostic turns like a workflow run) - `preference_learning` is the one exception,
+  it never falls back to the active job. `get_or_create_cover_letter_session` retargets an
+  existing session's model in place (`store.set_session_model`, not the fork-aware
+  `store.switch_session_model` built for Tailor-page compare panes) so switching models in
+  the widget never forks/resets the conversation; if the job has a cover letter marked
+  preferred (see below), that session always wins over the plain "first pane" default, so
+  chat feedback after showing/drafting the preferred letter keeps revising that exact one.
+  `resume`/`qa` have no preferred-session concept, so they always just reuse the job's
+  first session of that tab (`_get_or_create_tailor_session`).
 - **`src/prompts/`** - tailoring chat prompt templates, one `.txt` file per artifact
   type, the preference-revision prompt, and the assistant's own (`assistant_chat.txt`,
   `route_assistant_turn.txt`).
@@ -97,9 +128,15 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   - the user has already decided on those, so nothing left to re-judge; skipped jobs keep
   their last score (`db.fetch_latest_scores` reads each job's most recent live score, not one
   run's full result set, so a partial rerun can't blank out jobs it didn't touch).
-  Every call logs a `scoring_runs` row regardless of caller, and never raises - a failure
-  mid-run is recorded on the run (status `"error"`) and returned via the run id, not
-  thrown. `mode="test"` still makes a real LLM call per job (not a fixture, unlike
+  Every call logs a `scoring_runs` row regardless of caller, and never raises - a job that
+  keeps failing (`ai.score_job` already retried any transient network/SSL blip, see
+  `agents._post_with_backoff`) is skipped, not fatal to the batch: the loop moves on to
+  the next job instead of aborting the whole run. The run is recorded as `"partial"` if it
+  scored at least one job, `"error"` if it scored none, `error_message` naming every
+  skipped job. `db.fetch_latest_scores` reads both `"ok"` and `"partial"` live runs, so
+  jobs scored around a skipped one still reach the dashboard - only a run that scored
+  nothing is ignored.
+  `mode="test"` still makes a real LLM call per job (not a fixture, unlike
   `src/components/`'s test mode - a fake score wouldn't exercise the prompt/parsing path)
   but forces the model to `agents.DEFAULT_MODEL` (free) regardless of what's requested,
   and never touches the dashboard.
@@ -143,13 +180,18 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
 - **`src/workflows.py`** - `WORKFLOWS` registry (name/description/`uses`/`status`) for
   the `/workflows` cards. `status: "live"` entries carry a `"run"` callable and are what
   `src/assistant.py`'s router can trigger by name; `"pending"` entries are still
-  display-only. `run_job_search_rerank(mode)` (the `job_search_rerank` entry's runner):
-  for each `src/components/` entry, fetch -> `store.save_fetch_results` ->
-  `store.apply_run_filters` (saves survivors to the jobs table itself and returns how many -
-  the single source of truth for "added" counts, see below), then `scanner.run_scan(mode)`.
-  Never raises - mirrors `scanner.run_scan`'s contract, a failure in one component is
-  recorded/skipped, not fatal to the others. `tailor_top_3` stays `"pending"` (no runner) -
-  not yet built.
+  display-only. Two live entries, deliberately kept separate so an assistant-chat "rank
+  my jobs" request can't accidentally source new listings:
+  - `run_rescore_only(mode)` (the `rescore_jobs` entry's runner) - just
+    `scanner.run_scan(mode)`, no sourcing, nothing added to the jobs table.
+  - `run_job_search_rerank(mode)` (the `job_search_rerank` entry's runner): for each
+    `src/components/` entry, fetch -> `store.save_fetch_results` ->
+    `store.apply_run_filters` (saves survivors to the jobs table itself and returns how
+    many - the single source of truth for "added" counts, see below), then
+    `scanner.run_scan(mode)`. Never raises - mirrors `scanner.run_scan`'s contract, a
+    failure in one component is recorded/skipped, not fatal to the others.
+
+  `tailor_top_3` stays `"pending"` (no runner) - not yet built.
 - **`scripts/`** - quick manual scripts (`test_agents.py`, `show_last_call.py`).
 - **`templates/`** - Jinja2 HTML, all extending `base.html`. `base.html` also includes
   `chat_widget.html` on every logged-in page (the floating assistant bubble/panel - see
@@ -302,13 +344,22 @@ its own Run form (scope job or "All jobs", model, test/live mode -> `POST
 summary/revised-preferences table, full run history, and - unchanged - each preference
 category's current text/last-updated (`store.get_preferences_full`) below that.
 
-`/workflows` (`templates/workflows.html`, linked from the Admin menu as "Workflows") is a
-dashboard of multi-step flows, one card per `src/workflows.py` entry - description plus a
-chip per component/tool it will use, linking to that component's/tool's own page
-(`component_detail`/`tool_detail`). `job_search_rerank` now has a real runner
-(`workflows.run_job_search_rerank`, triggerable from the floating assistant chat - see
-above) but this page itself still has no manual "Run now" button/route; `tailor_top_3`
-has neither a runner nor a trigger yet.
+`/workflows` (`templates/workflows.html`, linked from the Admin menu as "Workflows",
+`app.py`'s `workflows_page()`) is a dashboard of everything the floating assistant chat
+can trigger, in two sections. "Multi-step workflows": one card per `src/workflows.py`
+entry - description plus a chip per component/tool it will use, linking to that
+component's/tool's own page (`component_detail`/`tool_detail`). `rescore_jobs` and
+`job_search_rerank` both have real runners (`workflows.run_rescore_only` /
+`workflows.run_job_search_rerank`, triggerable from the floating assistant chat - see
+above) but this page itself still has no manual "Run now" button/route; `tailor_top_3` has
+neither a runner nor a trigger yet. "Single-step chat actions": one card per
+`assistant.FIXED_ACTIONS` entry (passed to the template as `chat_actions`) - the exact
+same list `agents.route_assistant_turn`'s prompt and `_clarify_action_reply`'s "unclear"
+listing use, so this page is a live mirror of what chat supports, not a separately
+maintained description. Each card's status tag ("Live"/"Not implemented") reads `w.status`
+from the registry rather than being hardcoded per card (previously every workflow card
+showed "Not implemented" regardless of whether it had a real runner - fixed alongside this
+change).
 
 `webapp/tests/` - stdlib `unittest`, one file per `src/components/` module, all network
 calls mocked (`unittest.mock.patch` on `base.fetch_json`/`urlopen`). Run via `python -m

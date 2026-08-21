@@ -100,7 +100,7 @@
         <tr>
           <td><a href="{{ url_for('tool_detail', tool_id='score_fit', run=r.id) }}">#{{ r.id }}</a></td>
           <td>{{ r.mode|capitalize }}</td>
-          <td><span class="tag {{ 'tag-accent' if r.status == 'error' else 'tag-neutral' }}">{{ r.status|capitalize }}</span></td>
+          <td><span class="tag {{ 'tag-accent' if r.status in ('error', 'partial') else 'tag-neutral' }}">{{ r.status|capitalize }}</span></td>
           <td style="font-size:12px;">{{ r.model }}</td>
           <td>{{ r.scored_count }}</td>
           <td style="white-space:nowrap;">{{ r.started_at }}</td>

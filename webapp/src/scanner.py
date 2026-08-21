@@ -8,10 +8,13 @@ three via the mode="live" default) and the Score fit tool page (/tools/score_fit
 explicit mode/model from the run form). Every call logs a scoring_runs row regardless of
 caller - same "one choke point, always logged" shape as agents.send_chat + usage.json.
 
-Never raises: a failure mid-run is recorded on the run (status "error", error_message set)
-and returned via the run id, not thrown - so callers that don't inspect it (onboarding,
-/scan, /data/reload) can't crash on it. The Score fit tool page is where the run log/errors
-are actually surfaced.
+Never raises: a job that keeps failing (ai.score_job already retries transient
+network/SSL errors - see agents._post_with_backoff) is skipped, not fatal to the whole
+run - recorded on the run (status "error" if nothing got scored, "partial" if some jobs
+did, error_message naming every skipped job) and returned via the run id, not thrown - so
+callers that don't inspect it (onboarding, /scan, /data/reload) can't crash on it. The
+Score fit tool page is where the run log/errors are actually surfaced. Jobs scored before
+or after a skipped one still reach the dashboard - see db.fetch_latest_scores.
 """
 from datetime import datetime, timezone
 
@@ -52,17 +55,26 @@ def run_scan(mode="live", model=None, pending_only=False):
 
     jobs = [j for j in store.jobs if j["status"] not in store.TERMINAL_STATUSES] if pending_only else store.jobs
 
-    scored, error = 0, None
+    scored, skipped = 0, []
     for job in jobs:
         try:
             result = ai.score_job(job, resume_text, story_bank_text, industries, industries_text, model)
         except Exception as e:
-            error = f"Stopped after {scored} of {len(jobs)} jobs: {e}"
-            break
+            # ai.score_job already retried any transient network/SSL blip (see
+            # agents._post_with_backoff) - a failure here is a real one, so skip just this
+            # job and keep going rather than losing the rest of the batch to it.
+            skipped.append(f"{job['title']}: {e}")
+            continue
         store.save_scoring_result(run_id, job["id"], result["score"], result["summary"])
         scored += 1
 
-    store.finish_scoring_run(run_id, "error" if error else "ok", scored, error)
+    # "partial" (not "error") when at least one job scored despite others being skipped -
+    # those results are real and must reach the dashboard (db.fetch_latest_scores reads
+    # them), not get thrown away just because the run didn't finish every job. A run that
+    # scored nothing (no resume, or every job failed) stays "error".
+    error = f"{len(skipped)} job(s) skipped after failing: " + "; ".join(skipped) if skipped else None
+    status = "ok" if not error else ("partial" if scored else "error")
+    store.finish_scoring_run(run_id, status, scored, error)
     if live:
         store.last_scan = datetime.now(timezone.utc)
         store.save_last_scan()

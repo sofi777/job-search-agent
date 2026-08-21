@@ -1418,8 +1418,10 @@ def fetch_latest_scores():
     the dashboard shows. Per-job, not per-run: a pending-only rescan (see scanner.run_scan)
     only covers a subset of jobs, so a job it skips keeps the score from its own last live run
     rather than losing it because that run wasn't the latest overall. Test runs never touch
-    this; a failed live run (status != 'ok') doesn't either, so a partial failure never
-    overwrites the last good score."""
+    this. A run that scored nothing ('error') doesn't either, so it can't blank out a job's
+    last good score - but 'partial' (a mid-run failure that still scored some jobs before
+    breaking) does count: those jobs were genuinely scored and must reach the dashboard, not
+    be discarded just because a later job in the same run failed."""
     with db_transaction() as conn:
         rows = conn.execute("""
             SELECT job_id, score, summary FROM (
@@ -1427,7 +1429,7 @@ def fetch_latest_scores():
                        ROW_NUMBER() OVER (PARTITION BY res.job_id ORDER BY run.id DESC) AS rn
                 FROM scoring_run_results res
                 JOIN scoring_runs run ON run.id = res.run_id
-                WHERE run.mode = 'live' AND run.status = 'ok'
+                WHERE run.mode = 'live' AND run.status IN ('ok', 'partial')
             ) WHERE rn = 1
         """).fetchall()
     return {r["job_id"]: {"score": r["score"], "summary": r["summary"]} for r in rows}

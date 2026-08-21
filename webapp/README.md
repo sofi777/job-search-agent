@@ -92,8 +92,8 @@ webapp/
   commute radius, remote preference, eligible/remote countries, industries + free-text
   preferences, minimum salary/currency, then runs an immediate scan
 - **Dashboard**: sortable, filterable job table (employer, role, posted date, match %,
-  status, notes). Search by company/title, filter by status, sort any column. Default
-  sort: newest posted first.
+  why it matched, status, notes). Search by company/title, filter by status, sort any
+  column. Default sort: newest posted first.
 - **Job detail page**: full description, apply link to the source posting, mark
   applied/not applied, link to "Tailor my application"
 - **Status tracking**: new to viewed (automatic on open) to applied, plus a manual
@@ -227,9 +227,17 @@ webapp/
   only ever looks at what's new. Below the run log, each category's current learned
   text and when it last changed is still shown read-only, with a link to `/preferences`
   to edit directly. The two pending tools just explain what's blocking them.
-- **Workflows** (`/workflows`, linked from the Admin menu): dashboard of multi-step
-  flows chaining the above components/tools, one card per `src/workflows.py` entry with
-  a chip per component/tool it will use (linking to that component's/tool's own page).
+- **Workflows** (`/workflows`, linked from the Admin menu): dashboard of everything the
+  floating assistant chat can trigger. Two sections: multi-step flows (one card per
+  `src/workflows.py` entry, a chip per component/tool it will use, linking to that
+  component's/tool's own page) and single-step chat actions (one card per
+  `assistant.FIXED_ACTIONS` entry - the same catalogue chat uses to route a turn and to
+  list what it supports when a message is unclear, so this page can't drift from what
+  chat actually does). Each card's status tag ("Live"/"Not implemented") is read from the
+  registry, not hardcoded.
+  - Rerank existing jobs: rescores everything already on the dashboard against your
+    resume/story bank/preferences - no sourcing, nothing added. Real runner
+    (`workflows.run_rescore_only`), triggerable from the floating assistant chat.
   - Job search and rerank: SerpAPI + RemoteOK + ATS boards -> Filter, dedupe & save ->
     Score fit -> dashboard. Has a real runner (`workflows.run_job_search_rerank`) and
     can be triggered from the floating assistant chat (see below); this page itself
@@ -238,24 +246,41 @@ webapp/
 - **Floating assistant** (bottom-right bubble, every logged-in page - `src/assistant.py`,
   `templates/chat_widget.html`): one continuous chat, not scoped to any single job or
   page, grounded in your full profile/preferences/dashboard (cross-session memory - it
-  persists forever, same DB as everything else). Understands three kinds of requests:
-  - **Trigger a live workflow** in plain language ("run job search and rerank") - runs
-    the same chain as above and replies with an exact, non-hallucinated summary (jobs
-    added per source, rescored count, any per-source errors) composed in Python from the
-    real result, not restated by the model.
-  - **Draft or revise a cover letter** for a job ("draft a cover letter for the Notion
-    role", or just "make it shorter" once one's already the topic) - runs through the
-    exact same turn logic as the per-job Tailor page (`src/tailoring.run_turn`, see
-    Tailoring chat above), so the draft, the learned-preference feedback loop, and the
-    thumbs up/down rating are all the *same* record shown on that job's own `/jobs/<id>/
-    tailor` page - the chat is just an additional front door onto it, not a separate
-    copy. Preview and give feedback right in the chat; no need to navigate away.
+  persists forever, same DB as everything else). Every action it can take is a fixed,
+  code-backed one (`src.assistant.FIXED_ACTIONS` + `workflows.WORKFLOWS`'s live entries) -
+  it never improvises a step that isn't wired up:
+  - **Trigger a live workflow** in plain language - "rank/rerank my jobs" only rescores
+    what's already on the dashboard; "run job search and rerank"/"find new jobs" also
+    sources new listings first. Each replies with an exact, non-hallucinated summary
+    (rescored count, jobs added per source where relevant, any errors) composed in
+    Python from the real result, not restated by the model.
+  - **Draft or revise a cover letter, resume, or Q&A answers** for a job ("draft a cover
+    letter for the Notion role", or just "make it shorter" once one's already the topic)
+    - runs through the exact same turn logic as the per-job Tailor page
+    (`src/tailoring.run_turn`, see Tailoring chat above), so the draft, the
+    learned-preference feedback loop, and the thumbs up/down rating are all the *same*
+    record shown on that job's own `/jobs/<id>/tailor` page - the chat is just an
+    additional front door onto it, not a separate copy. Preview and give feedback right
+    in the chat; no need to navigate away. Each tab (cover letter/resume/Q&A) keeps its
+    own session, so asking for one never touches another.
   - **Show the preferred cover letter** ("show me the preferred letter for the Notion
     role") - a plain lookup of whatever's marked "ready to send" for that job (see
     Preferred cover letter above), no generation call. Give feedback right after and it
     keeps revising that exact letter, same as any other cover-letter turn.
+  - **Mark a job's status** ("mark the Notion job as applied") - the same
+    `store.update_job_progress` write the dashboard's status control uses.
+  - **Add a job by URL** ("add this job: <url>") - the same extraction (`ai.
+    extract_job_posting`) and add path (`store.add_custom_job`) as the dashboard's "Add
+    Job Posting" popup. Left unranked until the next rescore, like any other add.
+  - **Check what's been learned from your feedback** ("what have you learned?", or
+    scoped to one job) - runs `src.learning.run_learning` live, same as
+    `/tools/preference_learning`'s own run button.
   - **Answer questions or just talk** using your profile/preferences/dashboard as
     context, when the message isn't asking for any of the above.
+  - **Ask for clarification** when a message clearly wants an action done but doesn't
+    cleanly match one of the above (or asks for more than one thing at once) - replies
+    with the exact list of supported actions instead of guessing or silently just
+    chatting. One action per message today - "add this job and rerank" needs two turns.
 
   Tracks which job is under discussion across turns without you repeating it (falls
   back to whichever job the last relevant turn was about; asks for clarification rather

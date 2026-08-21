@@ -87,6 +87,29 @@ class WorkflowRunnerTests(unittest.TestCase):
         self.assertIn("no api key", summary["per_component"]["serpapi"]["error"])
 
 
+class RescoreOnlyRunnerTests(unittest.TestCase):
+    def test_rescores_without_touching_any_sourcing_component(self):
+        mock_runs = {cid: _mock_component_run(cid) for cid in comp.COMPONENTS}
+        for patcher in mock_runs.values():
+            patcher.start()
+        self.addCleanup(lambda: [p.stop() for p in mock_runs.values()])
+
+        with mock.patch("src.scanner.run_scan", return_value=999) as run_scan:
+            summary = workflows.run_rescore_only(mode="test")
+
+        for component_id in comp.COMPONENTS:
+            comp.COMPONENTS[component_id]["run"].assert_not_called()
+        run_scan.assert_called_once_with(mode="test")
+        self.assertEqual(summary["scan_run_id"], 999)
+
+    def test_summary_shape_matches_scoring_run(self):
+        with mock.patch("src.scanner.run_scan", return_value=123), \
+             mock.patch("src.store.get_scoring_run", return_value={"scored_count": 4, "error_message": None}):
+            summary = workflows.run_rescore_only(mode="live")
+
+        self.assertEqual(summary, {"scan_run_id": 123, "rescored": 4, "scan_error": None})
+
+
 class WorkflowsPageTests(unittest.TestCase):
     def setUp(self):
         self.client = flask_app.app.test_client()
@@ -101,6 +124,16 @@ class WorkflowsPageTests(unittest.TestCase):
         html = self.client.get("/workflows").get_data(as_text=True)
         self.assertIn("/components/serpapi", html)
         self.assertIn("/tools/tailored_generation", html)
+
+    def test_page_lists_every_chat_action(self):
+        # Same catalogue the assistant's router and "unclear" clarification use (see
+        # src/assistant.py's FIXED_ACTIONS) - this page is meant to be the human-readable
+        # mirror of it, so it can't silently drift from what chat actually supports.
+        import html as html_module
+        from src import assistant
+        html = html_module.unescape(self.client.get("/workflows").get_data(as_text=True))
+        for a in assistant.FIXED_ACTIONS:
+            self.assertIn(a["name"], html)
 
     def test_requires_login(self):
         anon = flask_app.app.test_client()

@@ -713,6 +713,7 @@ def system_components():
 def workflows_page():
     return render_template(
         "workflows.html", workflows=workflows.WORKFLOWS, components=comp.COMPONENTS, tools=tools.TOOLS,
+        chat_actions=assistant.FIXED_ACTIONS,
     )
 
 

@@ -97,15 +97,57 @@ class RunScanTests(unittest.TestCase):
         self.assertEqual(model, "m")
 
     @mock.patch("src.ai.score_job")
-    def test_a_failure_mid_run_is_recorded_not_raised(self, score_job):
+    def test_a_failure_mid_run_is_recorded_as_partial_and_scored_jobs_reach_the_dashboard(self, score_job):
         score_job.side_effect = [{"score": 80, "summary": "ok"}, RuntimeError("model unusable")]
+        scored_job_id = store.jobs[0]["id"]
+
+        run_id = scanner.run_scan(mode="live")  # must not raise
+
+        run = store.get_scoring_run(run_id)
+        self.assertEqual(run["status"], "partial")
+        self.assertIn("model unusable", run["error_message"])
+        self.assertEqual(run["scored_count"], 1)
+        # the one job that did score before the failure must still show up on the dashboard,
+        # not get discarded just because the run as a whole didn't finish.
+        self.assertEqual(store.get_job(scored_job_id)["match"], 80)
+
+    @mock.patch("src.ai.score_job")
+    def test_a_failure_on_the_first_job_is_recorded_as_error_not_partial(self, score_job):
+        score_job.side_effect = RuntimeError("model unusable")
 
         run_id = scanner.run_scan(mode="live")  # must not raise
 
         run = store.get_scoring_run(run_id)
         self.assertEqual(run["status"], "error")
+        self.assertEqual(run["scored_count"], 0)
+
+    @mock.patch("src.ai.score_job")
+    def test_a_persistently_failing_job_is_skipped_not_fatal_to_the_batch(self, score_job):
+        # First job fails for good (already-retried-by-agents error bubbling up), the rest
+        # succeed - the whole run must not stop after job 1 the way it used to.
+        results = [{"score": 91, "summary": "Great fit"}] * (len(store.jobs) - 1)
+        score_job.side_effect = [RuntimeError("model unusable")] + results
+
+        run_id = scanner.run_scan(mode="live")
+
+        self.assertEqual(score_job.call_count, len(store.jobs))
+        run = store.get_scoring_run(run_id)
+        self.assertEqual(run["status"], "partial")
+        self.assertEqual(run["scored_count"], len(store.jobs) - 1)
+        self.assertIn("1 job(s) skipped", run["error_message"])
         self.assertIn("model unusable", run["error_message"])
-        self.assertEqual(run["scored_count"], 1)
+
+    @mock.patch("src.ai.score_job")
+    def test_every_job_failing_is_recorded_as_error_with_all_jobs_named(self, score_job):
+        score_job.side_effect = RuntimeError("model unusable")
+
+        run_id = scanner.run_scan(mode="live")
+
+        self.assertEqual(score_job.call_count, len(store.jobs))
+        run = store.get_scoring_run(run_id)
+        self.assertEqual(run["status"], "error")
+        self.assertEqual(run["scored_count"], 0)
+        self.assertIn(f"{len(store.jobs)} job(s) skipped", run["error_message"])
 
     def test_no_resume_fails_clearly_without_calling_the_llm(self):
         _delete_profile_document("resume")

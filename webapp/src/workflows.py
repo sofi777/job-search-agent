@@ -51,7 +51,35 @@ def run_job_search_rerank(mode="live"):
     return summary
 
 
+def run_rescore_only(mode="live"):
+    """Rerank the jobs already on the dashboard - no sourcing, nothing added. Just
+    scanner.run_scan, wrapped in the same {scan_run_id, rescored, scan_error} shape
+    run_job_search_rerank uses for its scan half, so assistant._describe_workflow_result
+    can format both consistently.
+
+    This is what "rank/rerank my jobs" should trigger from the assistant chat -
+    job_search_rerank is for "find new jobs and rank them"; picking the wrong one means
+    burning sourcing API calls and adding listings the user never asked for.
+    """
+    scan_run_id = scanner.run_scan(mode=mode)
+    scan_run = store.get_scoring_run(scan_run_id)
+    return {
+        "scan_run_id": scan_run_id,
+        "rescored": scan_run["scored_count"] if scan_run else 0,
+        "scan_error": scan_run["error_message"] if scan_run else None,
+    }
+
+
 WORKFLOWS = {
+    "rescore_jobs": {
+        "name": "Rerank existing jobs",
+        "description": "Rescores every job already on the dashboard against your resume, "
+                        "story bank, and preferences - does not search for or add any new "
+                        "jobs.",
+        "uses": [("tool", "score_fit")],
+        "status": "live",
+        "run": run_rescore_only,
+    },
     "job_search_rerank": {
         "name": "Job search and rerank",
         "description": "Fetches new listings from SerpAPI, RemoteOK, and ATS boards, "

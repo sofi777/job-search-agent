@@ -3,7 +3,7 @@
 {% block body %}
 {% include "_nav.html" %}
 
-<div class="container">
+<div class="container" style="max-width:1800px;">
   <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:var(--space-3);margin-bottom:var(--space-4);">
     <div>
       <h1>{{ job_count }} roles matched</h1>
@@ -86,10 +86,18 @@
   </div>
 
   <div class="table-wrap">
-    <table class="table" style="min-width:960px;">
+    <table class="table" style="min-width:1200px;">
       <thead>
         <tr>
-          {% for key, label in [('company','Employer'), ('title','Role'), ('posted','Posted'), ('match','Match'), ('status','Status')] %}
+          {% for key, label in [('company','Employer'), ('title','Role'), ('posted','Posted'), ('match','Match')] %}
+          <th>
+            <a href="{{ url_for('dashboard', sort=key, dir=('asc' if sort_key == key and sort_dir == 'desc' else 'desc'), status=status_filter, q=query) }}">
+              {{ label }}{% if sort_key == key %}{{ ' ▲' if sort_dir == 'asc' else ' ▼' }}{% endif %}
+            </a>
+          </th>
+          {% endfor %}
+          <th>Why</th>
+          {% for key, label in [('status','Status')] %}
           <th>
             <a href="{{ url_for('dashboard', sort=key, dir=('asc' if sort_key == key and sort_dir == 'desc' else 'desc'), status=status_filter, q=query) }}">
               {{ label }}{% if sort_key == key %}{{ ' ▲' if sort_dir == 'asc' else ' ▼' }}{% endif %}
@@ -114,11 +122,12 @@
           <td style="white-space:nowrap;">{{ job.posted }}</td>
           <td style="white-space:nowrap;">
             {% if job.match is defined and job.match is not none %}
-            <span class="tag {{ 'tag-outline' if job.match >= 85 else 'tag-neutral' }}" title="{{ job.match_summary }}">{{ job.match }}% match</span>
+            <span class="tag {{ 'tag-outline' if job.match >= 85 else 'tag-neutral' }}">{{ job.match }}% match</span>
             {% else %}
             <span class="tag tag-neutral">Not yet ranked</span>
             {% endif %}
           </td>
+          <td style="min-width:280px;font-size:13px;color:var(--color-neutral-700);">{{ job.match_summary or '' }}</td>
           <td>
             <form method="post" action="{{ url_for('job_status', job_id=job.id) }}">
               <select name="status" class="input tag {{ 'tag-accent' if job.status == 'new' else 'tag-neutral' }}" style="width:auto;min-height:28px;padding:3px 8px;border:none;" onchange="this.form.submit()">
