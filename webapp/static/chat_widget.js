@@ -14,6 +14,11 @@
   const modelSelect = panel.querySelector('[data-assistant-model]');
 
   let historyLoaded = false;
+  let lastRenderedId = 0;
+  let thinkingRow = null;
+  let pollTimer = null;
+  const POLL_INTERVAL_MS = 2000;
+  const POLL_TIMEOUT_MS = 3 * 60 * 1000;
 
   function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -92,13 +97,77 @@
     scrollToBottom();
   }
 
+  // Renders only messages newer than what's already on screen, keyed by id - shared by
+  // loadHistory() and the poll fallback below so a message never gets rendered twice.
+  function appendMessages(messages) {
+    messages.forEach((m) => {
+      if (m.id <= lastRenderedId) return;
+      renderMessage(m);
+      lastRenderedId = Math.max(lastRenderedId, m.id);
+    });
+  }
+
+  function showThinking() {
+    sendBtn.disabled = true;
+    if (!thinkingRow) thinkingRow = renderThinking();
+  }
+
+  function hideThinking() {
+    sendBtn.disabled = false;
+    if (thinkingRow) {
+      thinkingRow.remove();
+      thinkingRow = null;
+    }
+  }
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  // A turn (see assistant.handle_turn) keeps running and saving to the DB server-side even
+  // if this tab navigates away, gets backgrounded/frozen, or is closed mid-request - so
+  // instead of trusting the in-flight fetch's own callback, poll history until the reply
+  // shows up. Covers: switching windows, closing/reopening the widget, and reloading the
+  // page while a turn is still in flight.
+  function startPolling() {
+    if (pollTimer) return;
+    showThinking();
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    pollTimer = setInterval(() => {
+      if (Date.now() > deadline) {
+        stopPolling();
+        hideThinking();
+        renderError('Still no response - try again.');
+        return;
+      }
+      fetch('/assistant/history')
+        .then((r) => r.json())
+        .then((data) => {
+          const messages = data.messages || [];
+          const last = messages[messages.length - 1];
+          if (last && last.role === 'assistant' && last.id > lastRenderedId) {
+            stopPolling();
+            hideThinking();
+            appendMessages(messages);
+          }
+        })
+        .catch(() => {}); // transient - next tick retries
+    }, POLL_INTERVAL_MS);
+  }
+
   function loadHistory() {
     historyLoaded = true;
     fetch('/assistant/history')
       .then((r) => r.json())
       .then((data) => {
-        (data.messages || []).forEach(renderMessage);
+        const messages = data.messages || [];
+        appendMessages(messages);
         if (data.model) modelSelect.value = data.model;
+        const last = messages[messages.length - 1];
+        if (last && last.role === 'user') startPolling();
       })
       .catch(() => renderError('Could not load chat history.'));
   }
@@ -119,9 +188,8 @@
   function send() {
     const text = input.value.trim();
     if (!text) return;
-    sendBtn.disabled = true;
     renderMessage({ role: 'user', content: text });
-    const thinkingRow = renderThinking();
+    showThinking();
     input.value = '';
     input.style.height = 'auto';
 
@@ -132,19 +200,21 @@
     })
       .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
       .then(({ ok, data }) => {
-        thinkingRow.remove();
+        stopPolling(); // a leftover poll from an earlier pending turn shouldn't outlive this answer
         if (!ok) {
+          hideThinking();
           renderError(data.error || 'Something went wrong.');
           return;
         }
-        renderMessage(data.assistant_message);
+        if (data.user_message) lastRenderedId = Math.max(lastRenderedId, data.user_message.id);
+        hideThinking();
+        appendMessages(data.assistant_messages || []);
       })
       .catch(() => {
-        thinkingRow.remove();
-        renderError('Could not reach the assistant. Try again.');
-      })
-      .finally(() => {
-        sendBtn.disabled = false;
+        // The request may have been interrupted (navigation, backgrounded tab) rather than
+        // actually failed - the turn keeps running server-side, so fall back to polling for
+        // it instead of declaring failure.
+        startPolling();
       });
   }
 
