@@ -302,27 +302,60 @@ class RouteAssistantTurnTests(unittest.TestCase):
         return json.dumps(payload), agents.DEFAULT_MODEL, {}
 
     def test_valid_action_with_url_and_status_round_trips(self):
-        payload = {"action": "job_status", "job_query": "the Notion job", "status": "applied", "url": None}
+        payload = {"steps": [{"action": "job_status", "job_query": "the Notion job", "status": "applied", "url": None}]}
         with mock.patch.object(agents, "send_chat", return_value=self._reply(payload)):
             result = agents.route_assistant_turn("mark it applied", [], None, self.ACTIONS)
-        self.assertEqual(result, {"action": "job_status", "job_query": "the Notion job", "url": None, "status": "applied"})
+        self.assertEqual(result, [{"action": "job_status", "job_query": "the Notion job", "url": None, "status": "applied"}])
 
     def test_unclear_is_a_valid_action_even_though_not_in_the_list(self):
-        payload = {"action": "unclear", "job_query": None, "url": None, "status": None}
+        payload = {"steps": [{"action": "unclear", "job_query": None, "url": None, "status": None}]}
         with mock.patch.object(agents, "send_chat", return_value=self._reply(payload)):
             result = agents.route_assistant_turn("do the thing", [], None, self.ACTIONS)
-        self.assertEqual(result["action"], "unclear")
+        self.assertEqual(result[0]["action"], "unclear")
 
-    def test_action_outside_allowed_set_falls_back_to_chat(self):
-        payload = {"action": "delete_everything", "job_query": None, "url": None, "status": None}
+    def test_action_outside_allowed_set_is_dropped_falls_back_to_chat(self):
+        payload = {"steps": [{"action": "delete_everything", "job_query": None, "url": None, "status": None}]}
         with mock.patch.object(agents, "send_chat", return_value=self._reply(payload)):
             result = agents.route_assistant_turn("do something unsupported", [], None, self.ACTIONS)
-        self.assertEqual(result, {"action": "chat", "job_query": None, "url": None, "status": None})
+        self.assertEqual(result, [{"action": "chat", "job_query": None, "url": None, "status": None}])
 
     def test_send_chat_failure_falls_back_to_chat(self):
         with mock.patch.object(agents, "send_chat", side_effect=RuntimeError("down")):
             result = agents.route_assistant_turn("hi", [], None, self.ACTIONS)
-        self.assertEqual(result, {"action": "chat", "job_query": None, "url": None, "status": None})
+        self.assertEqual(result, [{"action": "chat", "job_query": None, "url": None, "status": None}])
+
+    def test_multi_step_reply_returns_steps_in_order(self):
+        payload = {"steps": [
+            {"action": "rescore_jobs", "job_query": None, "url": None, "status": None},
+            {"action": "job_status", "job_query": "the top job", "status": "applied", "url": None},
+        ]}
+        with mock.patch.object(agents, "send_chat", return_value=self._reply(payload)):
+            result = agents.route_assistant_turn("rerank then mark the top one applied", [], None, self.ACTIONS)
+        self.assertEqual([s["action"] for s in result], ["rescore_jobs", "job_status"])
+        self.assertEqual(result[1]["job_query"], "the top job")
+
+    def test_steps_beyond_the_cap_are_dropped(self):
+        step = {"action": "rescore_jobs", "job_query": None, "url": None, "status": None}
+        payload = {"steps": [step] * (agents.MAX_CHAIN_STEPS + 5)}
+        with mock.patch.object(agents, "send_chat", return_value=self._reply(payload)):
+            result = agents.route_assistant_turn("do it many times", [], None, self.ACTIONS)
+        self.assertEqual(len(result), agents.MAX_CHAIN_STEPS)
+
+    def test_invalid_step_in_a_chain_is_skipped_not_the_whole_chain(self):
+        payload = {"steps": [
+            {"action": "rescore_jobs", "job_query": None, "url": None, "status": None},
+            {"action": "delete_everything", "job_query": None, "url": None, "status": None},
+            {"action": "job_status", "job_query": "it", "status": "applied", "url": None},
+        ]}
+        with mock.patch.object(agents, "send_chat", return_value=self._reply(payload)):
+            result = agents.route_assistant_turn("chain with a bad middle step", [], None, self.ACTIONS)
+        self.assertEqual([s["action"] for s in result], ["rescore_jobs", "job_status"])
+
+    def test_no_steps_key_falls_back_to_chat(self):
+        payload = {"action": "job_status", "job_query": None, "url": None, "status": None}  # old single-step shape
+        with mock.patch.object(agents, "send_chat", return_value=self._reply(payload)):
+            result = agents.route_assistant_turn("hi", [], None, self.ACTIONS)
+        self.assertEqual(result, [{"action": "chat", "job_query": None, "url": None, "status": None}])
 
 
 if __name__ == "__main__":

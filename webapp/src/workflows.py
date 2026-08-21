@@ -60,6 +60,10 @@ def run_rescore_only(mode="live"):
     This is what "rank/rerank my jobs" should trigger from the assistant chat -
     job_search_rerank is for "find new jobs and rank them"; picking the wrong one means
     burning sourcing API calls and adding listings the user never asked for.
+
+    Not in WORKFLOWS: it's a single step (scanner.run_scan) over all jobs, not a chained
+    flow, so it's listed as a chat action (assistant.FIXED_ACTIONS) instead - see
+    assistant.handle_turn's "rescore_jobs" branch.
     """
     scan_run_id = scanner.run_scan(mode=mode)
     scan_run = store.get_scoring_run(scan_run_id)
@@ -71,15 +75,6 @@ def run_rescore_only(mode="live"):
 
 
 WORKFLOWS = {
-    "rescore_jobs": {
-        "name": "Rerank existing jobs",
-        "description": "Rescores every job already on the dashboard against your resume, "
-                        "story bank, and preferences - does not search for or add any new "
-                        "jobs.",
-        "uses": [("tool", "score_fit")],
-        "status": "live",
-        "run": run_rescore_only,
-    },
     "job_search_rerank": {
         "name": "Job search and rerank",
         "description": "Fetches new listings from SerpAPI, RemoteOK, and ATS boards, "

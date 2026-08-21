@@ -16,24 +16,39 @@ fetches new listings)
 - "chat": anything else - a question, general conversation, or feedback on something already
   shown (feedback on a draft belongs to "cover_letter"/"resume"/"qa" only if it's asking for
   a new revision; otherwise treat it as "chat").
-- "unclear": the message clearly wants you to DO something (not just chat or ask a question),
-  but it doesn't cleanly match one of the actions above, is missing something you'd need to
-  act (no job named and none active, no URL given), or asks for more than one action at once.
-  Prefer "unclear" over guessing at the closest action.
+- "unclear": this part of the message clearly wants you to DO something (not just chat or
+  ask a question), but it doesn't cleanly match one of the actions above, or is missing
+  something you'd need to act (no job named and none active, no URL given). Prefer
+  "unclear" over guessing at the closest action.
 
-If the action needs a job (cover_letter, resume, qa, show_preferred, job_status, or
-preference_learning scoped to one job) and the message names one, put a short phrase
-identifying it (title/company/rank like "top job") in "job_query". Leave "job_query" null if
-no specific job is named or needed - for preference_learning, null means "every job", not "the
-active job".
+The message may ask for more than one thing in sequence, e.g. "rerank all my jobs then draft
+a cover letter for the top one" or "add this job <url> then mark it applied". When it does,
+return one step per action, IN THE ORDER THEY SHOULD RUN (up to {max_steps} steps) - a later
+step can refer to a job by the outcome of an earlier one ("the top ranked job", "that job",
+"it") since each step is only resolved once the ones before it have finished. A plain,
+single-request message still just returns one step.
+
+For each step, if the action needs a job (cover_letter, resume, qa, show_preferred,
+job_status, or preference_learning scoped to one job) and the message names one, put a short
+phrase identifying it (title/company/rank like "top job") in "job_query". Leave "job_query"
+null if no specific job is named or needed - for preference_learning, null means "every job",
+not the active job.
 
 If the action is "add_job_url", put the job posting URL from the message in "url". Else null.
 
 If the action is "job_status", put the target status in "status" - one of: applied, rejected,
 irrelevant, viewed. Else null.
 
-Reply with ONLY a JSON object, no markdown fences, no commentary, with exactly these keys:
+Reply with ONLY a JSON object, no markdown fences, no commentary, with exactly this shape:
+{{"steps": [{{"action": "...", "job_query": "...", "url": "...", "status": "..."}}, ...]}}
+where each step has exactly these keys:
 "action": one of the action ids listed above, exactly as written
 "job_query": a short phrase naming the job, or null
 "url": a job posting URL, or null
 "status": a job status, or null
+
+Example for "rerank all jobs then create a cover letter for the top ranked":
+{{"steps": [
+  {{"action": "rescore_jobs", "job_query": null, "url": null, "status": null}},
+  {{"action": "cover_letter", "job_query": "the top ranked job", "url": null, "status": null}}
+]}}

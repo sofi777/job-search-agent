@@ -105,7 +105,7 @@ class HandleTurnShowPreferredTests(unittest.TestCase):
     def _route(self, job_query=None):
         return mock.patch(
             "src.agents.route_assistant_turn",
-            return_value={"action": "show_preferred", "job_query": job_query},
+            return_value=[{"action": "show_preferred", "job_query": job_query}],
         )
 
     def test_shows_marked_letter_no_generation_call(self):
@@ -117,7 +117,7 @@ class HandleTurnShowPreferredTests(unittest.TestCase):
             resp = self.client.post("/assistant/message", json={"message": "show me the preferred letter"})
 
         self.assertEqual(resp.status_code, 200)
-        data = resp.get_json()["assistant_message"]
+        data = resp.get_json()["assistant_messages"][0]
         self.assertEqual(data["job_id"], self.job["id"])
         self.assertEqual(data["artifact_text"], "Dear hiring manager...")
         run_tailor_turn.assert_not_called()
@@ -125,14 +125,14 @@ class HandleTurnShowPreferredTests(unittest.TestCase):
     def test_no_preferred_letter_yet_says_so(self):
         with self._route(self.job["company"]):
             resp = self.client.post("/assistant/message", json={"message": "show me the preferred letter"})
-        data = resp.get_json()["assistant_message"]
+        data = resp.get_json()["assistant_messages"][0]
         self.assertIn("No cover letter is marked ready to send", data["content"])
         self.assertIsNone(data["artifact_text"])
 
     def test_unresolvable_job_asks_for_clarification(self):
         with self._route("a job that does not exist anywhere"):
             resp = self.client.post("/assistant/message", json={"message": "show me the preferred letter"})
-        data = resp.get_json()["assistant_message"]
+        data = resp.get_json()["assistant_messages"][0]
         self.assertIsNone(data["job_id"])
 
     def test_feedback_after_showing_continues_the_preferred_session(self):
@@ -144,7 +144,7 @@ class HandleTurnShowPreferredTests(unittest.TestCase):
             self.client.post("/assistant/message", json={"message": "show me the preferred letter"})
 
         with mock.patch(
-            "src.agents.route_assistant_turn", return_value={"action": "cover_letter", "job_query": None}
+            "src.agents.route_assistant_turn", return_value=[{"action": "cover_letter", "job_query": None}]
         ), mock.patch(
             "src.agents.classify_turn", return_value={"needs_retrieval": False, "reveals_preference": False}
         ), mock.patch(

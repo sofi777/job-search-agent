@@ -623,28 +623,42 @@ def _format_history_text(history):
     return "\n".join(f"{m['role']}: {m['content']}" for m in trim_history(history))
 
 
+MAX_CHAIN_STEPS = 3
+
+
 def route_assistant_turn(message, history, active_job, actions):
-    """Classify one assistant-widget turn - same "prompt -> parsed JSON -> Python
-    dispatches" shape as classify_turn. `active_job` is {"title", "company"} or None.
-    `actions` is [{"id", "name", "description"}, ...] - every action the model may pick,
-    built by src.assistant from live workflows.WORKFLOWS entries plus its own fixed-action
-    catalogue; wiring up a new workflow's runner later makes it routable automatically, no
-    change needed here.
+    """Plan one assistant-widget turn - same "prompt -> parsed JSON -> Python dispatches"
+    shape as classify_turn, but returns an ordered list of steps so a single message can
+    chain multiple actions (e.g. "rerank all jobs then draft a cover letter for the top
+    one") instead of only ever picking the one closest-matching action. `active_job` is
+    {"title", "company"} or None. `actions` is [{"id", "name", "description"}, ...] - every
+    action the model may pick, built by src.assistant from live workflows.WORKFLOWS entries
+    plus its own fixed-action catalogue; wiring up a new workflow's runner later makes it
+    routable automatically, no change needed here.
 
-    Returns {"action": one of `actions`' ids, "chat", or "unclear",
-             "job_query": short phrase naming the job this turn is about, or None,
-             "url": a job posting URL (only meaningful for "add_job_url"), or None,
-             "status": a job status (only meaningful for "job_status"), or None}.
+    Returns a list of 1-MAX_CHAIN_STEPS {"action", "job_query", "url", "status"} dicts, in
+    the order they should run (src.assistant.handle_turn executes them in sequence, stopping
+    at the first step that fails - see _execute_step). Each step has the same shape as
+    before: "action" is one of `actions`' ids, "chat", or "unclear"; "job_query" is a short
+    phrase naming the job the step is about, or None; "url" is a job posting URL (only
+    meaningful for "add_job_url"), or None; "status" is a job status (only meaningful for
+    "job_status"), or None.
 
-    Defaults to {"action": "chat", ...all else None} on any failure (RuntimeError, an
-    unparseable reply, or an action id outside the allowed set) - unlike classify_turn's
-    "default to the safe-to-over-trigger option" bias, wrongly firing a paid workflow or an
-    unwanted document draft is the unsafe direction here, so the inert action is the only
-    safe default. "unclear" is a deliberate model choice (message clearly wants an action but
-    doesn't cleanly match one), not a failure fallback - see route_assistant_turn.txt.
+    A single-action turn still comes back as a one-element list, so callers always just
+    iterate. Later steps that reference "the top job" or "that job" resolve against fresh
+    state at execution time (store.jobs is updated in place by a rescore/rerank step before
+    the next step runs), not at planning time - no extra plumbing needed for that.
+
+    Defaults to [{"action": "chat", ...all else None}] on any failure (RuntimeError, an
+    unparseable reply, or no valid step in the reply) - unlike classify_turn's "default to
+    the safe-to-over-trigger option" bias, wrongly firing a paid workflow or an unwanted
+    document draft is the unsafe direction here, so the inert action is the only safe
+    default. A step with "unclear" is a deliberate model choice (that part of the message
+    clearly wants an action but doesn't cleanly match one), not a failure fallback - see
+    route_assistant_turn.txt.
     """
     allowed_actions = {a["id"] for a in actions} | {"chat", "unclear"}
-    fallback = {"action": "chat", "job_query": None, "url": None, "status": None}
+    fallback = [{"action": "chat", "job_query": None, "url": None, "status": None}]
 
     action_list = "\n".join(f'- "{a["id"]}": {a["description"]}' for a in actions)
     active_job_line = f"{active_job['title']} at {active_job['company']}" if active_job else "(none)"
@@ -653,6 +667,7 @@ def route_assistant_turn(message, history, active_job, actions):
         active_job_line=active_job_line,
         message=message,
         action_list=action_list or "(none currently available)",
+        max_steps=MAX_CHAIN_STEPS,
     )
     try:
         reply, _used_model, _usage = send_chat([{"role": "user", "content": prompt}], DEFAULT_MODEL)
@@ -660,12 +675,18 @@ def route_assistant_turn(message, history, active_job, actions):
     except RuntimeError:
         return fallback
 
-    action = data.get("action")
-    if action not in allowed_actions:
+    raw_steps = data.get("steps")
+    if not isinstance(raw_steps, list):
         return fallback
-    return {
-        "action": action,
-        "job_query": data.get("job_query") or None,
-        "url": data.get("url") or None,
-        "status": data.get("status") or None,
-    }
+
+    steps = []
+    for raw in raw_steps[:MAX_CHAIN_STEPS]:
+        if not isinstance(raw, dict) or raw.get("action") not in allowed_actions:
+            continue
+        steps.append({
+            "action": raw["action"],
+            "job_query": raw.get("job_query") or None,
+            "url": raw.get("url") or None,
+            "status": raw.get("status") or None,
+        })
+    return steps or fallback

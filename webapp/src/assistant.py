@@ -1,10 +1,11 @@
 """Chat orchestrator for the floating, cross-page assistant - one continuous global thread
-(see db.py's assistant_messages docstring), not scoped to a job or a "pane". Routes each
-free-text turn to the right action (plain chat, a live workflow, a tailoring draft/revision,
-a job-status update, adding a job by URL, or a preference-learning check) via
-agents.route_assistant_turn, and always persists to that thread. Calls agents (LLM), ai (job
-extraction), learning (preference-learning runs), store (DB), and tailoring (the shared
-per-job turn logic) - owns no persistence itself - same shape as scanner.py/learning.py.
+(see db.py's assistant_messages docstring), not scoped to a job or a "pane". Plans each
+free-text turn into an ordered list of one or more actions (plain chat, a live workflow, a
+tailoring draft/revision, a job-status update, adding a job by URL, or a preference-learning
+check) via agents.route_assistant_turn, runs them in sequence (see handle_turn, _execute_step),
+and always persists each step to that thread. Calls agents (LLM), ai (job extraction),
+learning (preference-learning runs), store (DB), and tailoring (the shared per-job turn logic)
+- owns no persistence itself - same shape as scanner.py/learning.py.
 """
 import re
 
@@ -20,6 +21,9 @@ _TAILORING_TABS = {"cover_letter", "resume", "qa"}
 # agents.route_assistant_turn's prompt and shown back to the user when routing lands on
 # "unclear" (see _clarify_action_reply), so the two never drift apart.
 FIXED_ACTIONS = [
+    {"id": "rescore_jobs", "name": "Rerank existing jobs",
+     "description": "rescores every job already on the dashboard against your resume, "
+                     "story bank, and preferences - does not search for or add any new jobs."},
     {"id": "cover_letter", "name": "Draft or revise a cover letter",
      "description": "for a job you name, or the one just discussed."},
     {"id": "resume", "name": "Draft or revise a resume",
@@ -126,7 +130,9 @@ def _handle_tailoring_turn(tab, message, job_query, active_job_id, model):
     row) so the widget's rating buttons can hit the existing, unmodified POST
     /messages/<id>/rate route against the exact row shown on that job's own Tailor page.
 
-    Returns the new assistant_messages row id.
+    Returns (assistant_messages row id, ok) - ok is False when the job couldn't be resolved
+    or generation errored, so a chained turn (see handle_turn) stops instead of running its
+    next step against nothing.
     """
     job, candidates = resolve_job(job_query, store.jobs) if job_query else (None, [])
     if job is None and not job_query:
@@ -137,21 +143,24 @@ def _handle_tailoring_turn(tab, message, job_query, active_job_id, model):
             "resume": "Which job would you like a resume for?",
             "qa": "Which job would you like Q&A answers for?",
         }[tab]
-        return store.add_assistant_message("assistant", _clarify_job_reply(candidates, prompt), model=model)
+        message_id = store.add_assistant_message("assistant", _clarify_job_reply(candidates, prompt), model=model)
+        return message_id, False
 
     chat_session = _get_or_create_tailor_session(job["id"], tab, model)
     chat_message_id, error = tailoring.run_turn(chat_session, job, message, store.get_preferences())
     if error:
-        return store.add_assistant_message("assistant", error, job_id=job["id"], model=model)
+        message_id = store.add_assistant_message("assistant", error, job_id=job["id"], model=model)
+        return message_id, False
 
     chat_message = store.get_chat_message(chat_message_id)
-    return store.add_assistant_message(
+    message_id = store.add_assistant_message(
         "assistant", chat_message["content"], job_id=job["id"], tool_name=tab,
         model=chat_message["model"], artifact_text=chat_message["artifact_text"],
         linked_chat_message_id=chat_message_id,
         response_time_seconds=chat_message["response_time_seconds"],
         input_tokens=chat_message["input_tokens"], output_tokens=chat_message["output_tokens"],
     )
+    return message_id, True
 
 
 def _handle_show_preferred_turn(job_query, active_job_id, model):
@@ -162,24 +171,29 @@ def _handle_show_preferred_turn(job_query, active_job_id, model):
     which now always continues this exact session once one is marked preferred (see
     get_or_create_cover_letter_session), so that feedback runs the normal tailoring turn
     (classify -> retrieve -> generate -> persist -> learn) against the real letter.
+
+    Returns (assistant_messages row id, ok) - see _handle_tailoring_turn.
     """
     job, candidates = resolve_job(job_query, store.jobs) if job_query else (None, [])
     if job is None and not job_query:
         job = store.get_job(active_job_id) if active_job_id else None
     if job is None:
         prompt = "Which job would you like the preferred cover letter for?"
-        return store.add_assistant_message("assistant", _clarify_job_reply(candidates, prompt), model=model)
+        message_id = store.add_assistant_message("assistant", _clarify_job_reply(candidates, prompt), model=model)
+        return message_id, False
 
     preferred = store.get_preferred_cover_letter(job["id"])
     if not preferred:
         reply = f"No cover letter is marked ready to send yet for {job['title']} at {job['company']}."
-        return store.add_assistant_message("assistant", reply, job_id=job["id"], model=model)
+        message_id = store.add_assistant_message("assistant", reply, job_id=job["id"], model=model)
+        return message_id, False
 
     reply = f"Here's the cover letter marked ready to send for {job['title']} at {job['company']}:"
-    return store.add_assistant_message(
+    message_id = store.add_assistant_message(
         "assistant", reply, job_id=job["id"], tool_name="show_preferred",
         model=preferred["model"], artifact_text=preferred["content"],
     )
+    return message_id, True
 
 
 def _handle_job_status_turn(job_query, status, active_job_id, model):
@@ -187,46 +201,61 @@ def _handle_job_status_turn(job_query, status, active_job_id, model):
     dashboard's status control uses, not a separate path. `status` comes from
     route_assistant_turn's extraction; not trusted blindly since it's still a free-text
     reading of the message - validated against store.JOB_STATUSES before writing.
+
+    Returns (assistant_messages row id, ok) - see _handle_tailoring_turn.
     """
     job, candidates = resolve_job(job_query, store.jobs) if job_query else (None, [])
     if job is None and not job_query:
         job = store.get_job(active_job_id) if active_job_id else None
     if job is None:
         prompt = "Which job's status would you like to update?"
-        return store.add_assistant_message("assistant", _clarify_job_reply(candidates, prompt), model=model)
+        message_id = store.add_assistant_message("assistant", _clarify_job_reply(candidates, prompt), model=model)
+        return message_id, False
 
     valid = ", ".join(store.JOB_STATUSES)
     if not status:
         reply = f"What should I mark {job['title']} at {job['company']} as? ({valid})"
-        return store.add_assistant_message("assistant", reply, job_id=job["id"], model=model)
+        message_id = store.add_assistant_message("assistant", reply, job_id=job["id"], model=model)
+        return message_id, False
     if status not in store.JOB_STATUSES:
         reply = f'"{status}" isn\'t a status I recognize - pick one of: {valid}.'
-        return store.add_assistant_message("assistant", reply, job_id=job["id"], model=model)
+        message_id = store.add_assistant_message("assistant", reply, job_id=job["id"], model=model)
+        return message_id, False
 
     store.update_job_progress(job["id"], status=status)
     reply = f"Marked {job['title']} at {job['company']} as {status}."
-    return store.add_assistant_message("assistant", reply, job_id=job["id"], model=model)
+    message_id = store.add_assistant_message("assistant", reply, job_id=job["id"], model=model)
+    return message_id, True
 
 
 def _handle_add_job_url_turn(url, model):
     """Add a job posting by URL via chat - the same ai.extract_job_posting +
     store.add_custom_job path app.py's job_add route uses for the dashboard's "Add Job
     Posting" popup, not a separate one. Left unranked until the next rescore, same as any
-    other add (see store.add_custom_job)."""
+    other add (see store.add_custom_job).
+
+    Returns (assistant_messages row id, ok) - see _handle_tailoring_turn. An already-added
+    URL still counts as ok=True (the job is there either way, so a chained turn like "add
+    this job then rerank" should carry on).
+    """
     if not url:
-        return store.add_assistant_message("assistant", "Paste the job posting's URL and I'll add it.", model=model)
+        message_id = store.add_assistant_message("assistant", "Paste the job posting's URL and I'll add it.", model=model)
+        return message_id, False
     if store.job_url_exists(url):
         reply = f"That job is already on your dashboard: {url}"
-        return store.add_assistant_message("assistant", reply, model=model)
+        message_id = store.add_assistant_message("assistant", reply, model=model)
+        return message_id, True
 
     try:
         fields = ai.extract_job_posting(url)
         job_id = store.add_custom_job(fields)
     except Exception as e:
-        return store.add_assistant_message("assistant", str(e), model=model)
+        message_id = store.add_assistant_message("assistant", str(e), model=model)
+        return message_id, False
 
     reply = f'Added "{fields["title"]}" at {fields["company"]}. Not yet ranked - rerank your jobs to score it.'
-    return store.add_assistant_message("assistant", reply, job_id=job_id, model=model)
+    message_id = store.add_assistant_message("assistant", reply, job_id=job_id, model=model)
+    return message_id, True
 
 
 def _handle_preference_learning_turn(job_query, model):
@@ -234,13 +263,16 @@ def _handle_preference_learning_turn(job_query, model):
     /tools/preference_learning page uses. Scoped to a named job if one's given, else every
     job's unchecked feedback - no active-job fallback here, unlike the tailoring actions:
     "what have you learned" defaults to "everything", not whatever job was last discussed.
+
+    Returns (assistant_messages row id, ok) - see _handle_tailoring_turn.
     """
     scope_job_id = None
     if job_query:
         job, candidates = resolve_job(job_query, store.jobs)
         if job is None:
             prompt = "Which job's feedback would you like me to check?"
-            return store.add_assistant_message("assistant", _clarify_job_reply(candidates, prompt), model=model)
+            message_id = store.add_assistant_message("assistant", _clarify_job_reply(candidates, prompt), model=model)
+            return message_id, False
         scope_job_id = job["id"]
 
     run_id = learning.run_learning(scope_job_id=scope_job_id, mode="live")
@@ -249,7 +281,8 @@ def _handle_preference_learning_turn(job_query, model):
     reply = f"Checked {run['processed_count']} {scope_text} feedback message(s), updated {run['updated_count']} preference(s)."
     if run["error_message"]:
         reply += f" (error: {run['error_message']})"
-    return store.add_assistant_message("assistant", reply, job_id=scope_job_id, model=model)
+    message_id = store.add_assistant_message("assistant", reply, job_id=scope_job_id, model=model)
+    return message_id, not run["error_message"]
 
 
 def _live_workflows():
@@ -300,64 +333,99 @@ def _serialize(message):
     }
 
 
+def _execute_step(step, message, history, active_job_id, model, live_workflow_ids, available_actions):
+    """Run one step of a routing plan (see agents.route_assistant_turn). Returns
+    (assistant_messages row id, ok) - ok is False for anything a chained turn shouldn't
+    build on (a workflow/scoring error, a job that couldn't be resolved, a missing/invalid
+    input) so handle_turn stops the chain there instead of running the next step against a
+    bad or absent result.
+    """
+    action = step["action"]
+
+    if action in live_workflow_ids:
+        summary = workflows.WORKFLOWS[action]["run"](mode="live")
+        reply = _describe_workflow_result(action, summary)
+        message_id = store.add_assistant_message("assistant", reply, model=model)
+        return message_id, not summary.get("scan_error")
+    if action == "rescore_jobs":
+        summary = workflows.run_rescore_only(mode="live")
+        reply = _describe_workflow_result(action, summary)
+        message_id = store.add_assistant_message("assistant", reply, model=model)
+        return message_id, not summary.get("scan_error")
+    if action in _TAILORING_TABS:
+        return _handle_tailoring_turn(action, message, step.get("job_query"), active_job_id, model)
+    if action == "show_preferred":
+        return _handle_show_preferred_turn(step.get("job_query"), active_job_id, model)
+    if action == "job_status":
+        return _handle_job_status_turn(step.get("job_query"), step.get("status"), active_job_id, model)
+    if action == "add_job_url":
+        return _handle_add_job_url_turn(step.get("url"), model)
+    if action == "preference_learning":
+        return _handle_preference_learning_turn(step.get("job_query"), model)
+    if action == "unclear":
+        message_id = store.add_assistant_message(
+            "assistant", _clarify_action_reply(available_actions), model=model
+        )
+        return message_id, False
+
+    reply, used_model, usage = agents.answer_assistant_message(
+        message, history, store.profile, store.get_preferences(), store.jobs, model,
+    )
+    message_id = store.add_assistant_message(
+        "assistant", reply, model=used_model,
+        input_tokens=usage.get("prompt_tokens"), output_tokens=usage.get("completion_tokens"),
+    )
+    return message_id, True
+
+
 def handle_turn(message, model):
     """Run one turn of the global assistant thread. Never raises - LLM failures become a
     visible assistant reply, not a 500 (fail clearly to the user, not to the caller). Saves
     the user message before any LLM call, so it's never lost if something downstream breaks -
     same "never lose it" precedent as tailoring.run_turn.
 
-    Routes to a live workflow (see workflows.WORKFLOWS), a tailoring draft/revision, a
-    job-status update, adding a job by URL, a preference-learning check, "unclear" (a
-    deterministic list of what's supported, see _clarify_action_reply), or a plain
-    conversational reply - see agents.route_assistant_turn.
+    A turn can be a chain of steps (see agents.route_assistant_turn, MAX_CHAIN_STEPS), e.g.
+    "rerank all jobs then draft a cover letter for the top one" - each step runs in order via
+    _execute_step, and one assistant_messages row is persisted per step. Execution stops at
+    the first step that comes back not-ok (see _execute_step's per-action rules), so a later
+    step never runs against a failed or unresolved earlier one; the reply for a plain,
+    single-request turn is still just that one message. active_job_id is re-read from the DB
+    between steps so a job named/resolved by an earlier step (e.g. "top ranked job") becomes
+    the fallback for a later job-agnostic step in the same chain.
 
-    Returns {"user_message": {...}, "assistant_message": {...}}.
+    Each step routes to a live workflow (see workflows.WORKFLOWS), a tailoring draft/
+    revision, a job-status update, adding a job by URL, a preference-learning check,
+    "unclear" (a deterministic list of what's supported, see _clarify_action_reply), or a
+    plain conversational reply.
+
+    Returns {"user_message": {...}, "assistant_messages": [{...}, ...]}.
     """
     user_message_id = store.add_assistant_message("user", message, model=model)
     history = [{"role": m["role"], "content": m["content"]} for m in store.get_assistant_messages()][:-1]
 
+    assistant_message_ids = []
     try:
         live_workflows = _live_workflows()
         available_actions = live_workflows + FIXED_ACTIONS
         active_job_id = store.get_active_job_id()
         active_job = store.get_job(active_job_id) if active_job_id else None
-        routing = agents.route_assistant_turn(message, history, active_job, available_actions)
-        action = routing["action"]
+        plan = agents.route_assistant_turn(message, history, active_job, available_actions)
+        live_workflow_ids = {w["id"] for w in live_workflows}
 
-        if action in {w["id"] for w in live_workflows}:
-            summary = workflows.WORKFLOWS[action]["run"](mode="live")
-            reply = _describe_workflow_result(action, summary)
-            assistant_message_id = store.add_assistant_message("assistant", reply, model=model)
-        elif action in _TAILORING_TABS:
-            assistant_message_id = _handle_tailoring_turn(action, message, routing.get("job_query"), active_job_id, model)
-        elif action == "show_preferred":
-            assistant_message_id = _handle_show_preferred_turn(routing.get("job_query"), active_job_id, model)
-        elif action == "job_status":
-            assistant_message_id = _handle_job_status_turn(
-                routing.get("job_query"), routing.get("status"), active_job_id, model
+        for step in plan:
+            message_id, ok = _execute_step(
+                step, message, history, active_job_id, model, live_workflow_ids, available_actions
             )
-        elif action == "add_job_url":
-            assistant_message_id = _handle_add_job_url_turn(routing.get("url"), model)
-        elif action == "preference_learning":
-            assistant_message_id = _handle_preference_learning_turn(routing.get("job_query"), model)
-        elif action == "unclear":
-            assistant_message_id = store.add_assistant_message(
-                "assistant", _clarify_action_reply(available_actions), model=model
-            )
-        else:
-            reply, used_model, usage = agents.answer_assistant_message(
-                message, history, store.profile, store.get_preferences(), store.jobs, model
-            )
-            assistant_message_id = store.add_assistant_message(
-                "assistant", reply, model=used_model,
-                input_tokens=usage.get("prompt_tokens"), output_tokens=usage.get("completion_tokens"),
-            )
+            assistant_message_ids.append(message_id)
+            active_job_id = store.get_active_job_id()
+            if not ok:
+                break
     except RuntimeError as e:
-        assistant_message_id = store.add_assistant_message("assistant", str(e), model=model)
+        assistant_message_ids.append(store.add_assistant_message("assistant", str(e), model=model))
 
     return {
         "user_message": _serialize(store.get_assistant_message(user_message_id)),
-        "assistant_message": _serialize(store.get_assistant_message(assistant_message_id)),
+        "assistant_messages": [_serialize(store.get_assistant_message(mid)) for mid in assistant_message_ids],
     }
 
 

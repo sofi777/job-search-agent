@@ -65,13 +65,28 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
 - **`src/assistant.py`** - the floating assistant's orchestrator: one continuous global
   thread (not scoped to a job or a "pane", see `assistant_messages` below). Every action
   it can dispatch to is code-backed - `workflows.WORKFLOWS`'s live entries plus
-  `FIXED_ACTIONS` (its own catalogue: `cover_letter`/`resume`/`qa`/`show_preferred`/
-  `job_status`/`add_job_url`/`preference_learning`) - the two combined are both what's fed
-  to `agents.route_assistant_turn`'s prompt and what's shown back to the user on
-  `"unclear"` (see below), so the model is never told about a capability that isn't real.
-  `handle_turn(message, model)` calls `agents.route_assistant_turn` then dispatches to:
+  `FIXED_ACTIONS` (its own catalogue: `rescore_jobs`/`cover_letter`/`resume`/`qa`/
+  `show_preferred`/`job_status`/`add_job_url`/`preference_learning`) - the two combined
+  are both what's fed to `agents.route_assistant_turn`'s prompt and what's shown back to
+  the user on `"unclear"` (see below), so the model is never told about a capability that
+  isn't real. `route_assistant_turn` returns an ordered *plan* (1-`agents.MAX_CHAIN_STEPS`
+  steps, currently 3), not a single action, so one message can chain actions ("rerank all
+  jobs then draft a cover letter for the top one") without every combination needing its own
+  `WORKFLOWS` entry. `handle_turn(message, model)` calls it, then runs each step through
+  `_execute_step` in order, persisting one `assistant_messages` row per step (`/assistant/
+  message` returns `assistant_messages: [...]`, not a single `assistant_message`).
+  `_execute_step` returns `(message_id, ok)`; `handle_turn` stops the chain at the first
+  `ok=False` step (unresolved/ambiguous job, invalid input, or a workflow/scoring error) so
+  a later step never runs against a bad or missing result from an earlier one.
+  `active_job_id` is re-read from the DB between steps (`store.get_active_job_id`, derived
+  from the last message's `job_id`), so a job resolved by one step (e.g. `add_job_url`,
+  `cover_letter`) becomes the fallback for a later job-agnostic step in the same chain.
+  Each step dispatches to:
   - a live workflow (`workflows.WORKFLOWS[action]["run"]`, reply composed
     deterministically in Python from the summary, no second LLM call)
+  - `"rescore_jobs"` (`workflows.run_rescore_only` called directly, same deterministic
+    reply composition - a `FIXED_ACTIONS` entry, not a `WORKFLOWS` one, since it's a
+    single step over every job, not a chained flow)
   - `"cover_letter"`/`"resume"`/`"qa"` (`_handle_tailoring_turn`, shared by all three -
     `resolve_job` + `_get_or_create_tailor_session` + `tailoring.run_turn`, mirrored into
     this thread with `linked_chat_message_id` pointing at the real `chat_messages` row so
@@ -91,10 +106,9 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
     "everything" by default)
   - `"unclear"` (`_clarify_action_reply` - a deterministic "here's what I can help with"
     listing built from the same live-workflows + `FIXED_ACTIONS` catalogue, not restated
-    by the model; the model is instructed to prefer this over guessing when a message
-    wants an action done but doesn't cleanly match one, is missing something needed (no
-    job/URL), or asks for more than one action at once - there's no multi-action chaining
-    yet, so a combined ask like "add this job and rerank" needs two turns)
+    by the model; the model is instructed to prefer this for a step that clearly wants an
+    action done but doesn't cleanly match one, or is missing something needed (no job/URL) -
+    a step landing on `"unclear"` still counts as `ok=False`, so it stops the chain there)
   - plain chat (`agents.answer_assistant_message`) for everything else
 
   `resolve_job(job_query, jobs)` is a deterministic (no LLM) match against `store.jobs` -
@@ -178,18 +192,22 @@ Kept concise on purpose - update this as you learn more about the code, alongsid
   / `preference_learning_run_results` (`src/db.py`), same shape as `scoring_runs` /
   `scoring_run_results`.
 - **`src/workflows.py`** - `WORKFLOWS` registry (name/description/`uses`/`status`) for
-  the `/workflows` cards. `status: "live"` entries carry a `"run"` callable and are what
-  `src/assistant.py`'s router can trigger by name; `"pending"` entries are still
-  display-only. Two live entries, deliberately kept separate so an assistant-chat "rank
-  my jobs" request can't accidentally source new listings:
-  - `run_rescore_only(mode)` (the `rescore_jobs` entry's runner) - just
-    `scanner.run_scan(mode)`, no sourcing, nothing added to the jobs table.
+  the `/workflows` multi-step cards. `status: "live"` entries carry a `"run"` callable and
+  are what `src/assistant.py`'s router can trigger by name; `"pending"` entries are still
+  display-only. One live entry:
   - `run_job_search_rerank(mode)` (the `job_search_rerank` entry's runner): for each
     `src/components/` entry, fetch -> `store.save_fetch_results` ->
     `store.apply_run_filters` (saves survivors to the jobs table itself and returns how
     many - the single source of truth for "added" counts, see below), then
     `scanner.run_scan(mode)`. Never raises - mirrors `scanner.run_scan`'s contract, a
     failure in one component is recorded/skipped, not fatal to the others.
+
+  Also defines `run_rescore_only(mode)` - just `scanner.run_scan(mode)`, no sourcing,
+  nothing added to the jobs table. Deliberately *not* in `WORKFLOWS`: it's one step over
+  every job, not a chained flow, so it's a `FIXED_ACTIONS` entry (`assistant.py`) instead,
+  called directly from `handle_turn`'s `"rescore_jobs"` branch - keeping it separate from
+  `job_search_rerank` is what stops an assistant-chat "rank my jobs" request from
+  accidentally sourcing new listings.
 
   `tailor_top_3` stays `"pending"` (no runner) - not yet built.
 - **`scripts/`** - quick manual scripts (`test_agents.py`, `show_last_call.py`).
@@ -348,16 +366,17 @@ category's current text/last-updated (`store.get_preferences_full`) below that.
 `app.py`'s `workflows_page()`) is a dashboard of everything the floating assistant chat
 can trigger, in two sections. "Multi-step workflows": one card per `src/workflows.py`
 entry - description plus a chip per component/tool it will use, linking to that
-component's/tool's own page (`component_detail`/`tool_detail`). `rescore_jobs` and
-`job_search_rerank` both have real runners (`workflows.run_rescore_only` /
-`workflows.run_job_search_rerank`, triggerable from the floating assistant chat - see
-above) but this page itself still has no manual "Run now" button/route; `tailor_top_3` has
-neither a runner nor a trigger yet. "Single-step chat actions": one card per
-`assistant.FIXED_ACTIONS` entry (passed to the template as `chat_actions`) - the exact
-same list `agents.route_assistant_turn`'s prompt and `_clarify_action_reply`'s "unclear"
-listing use, so this page is a live mirror of what chat supports, not a separately
-maintained description. Each card's status tag ("Live"/"Not implemented") reads `w.status`
-from the registry rather than being hardcoded per card (previously every workflow card
+component's/tool's own page (`component_detail`/`tool_detail`). `job_search_rerank` has
+a real runner (`workflows.run_job_search_rerank`, triggerable from the floating assistant
+chat - see above) but this page itself still has no manual "Run now" button/route;
+`tailor_top_3` has neither a runner nor a trigger yet. "Single-step chat actions": one
+card per `assistant.FIXED_ACTIONS` entry (passed to the template as `chat_actions`,
+includes `rescore_jobs` - real runner `workflows.run_rescore_only`, no chip since it's not
+a `WORKFLOWS`/`uses` entry) - the exact same list `agents.route_assistant_turn`'s prompt
+and `_clarify_action_reply`'s "unclear" listing use, so this page is a live mirror of what
+chat supports, not a separately maintained description. Each card's status tag
+("Live"/"Not implemented") reads `w.status` from the registry rather than being
+hardcoded per card (previously every workflow card
 showed "Not implemented" regardless of whether it had a real runner - fixed alongside this
 change).
 

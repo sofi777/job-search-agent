@@ -235,20 +235,24 @@ webapp/
   list what it supports when a message is unclear, so this page can't drift from what
   chat actually does). Each card's status tag ("Live"/"Not implemented") is read from the
   registry, not hardcoded.
-  - Rerank existing jobs: rescores everything already on the dashboard against your
-    resume/story bank/preferences - no sourcing, nothing added. Real runner
-    (`workflows.run_rescore_only`), triggerable from the floating assistant chat.
   - Job search and rerank: SerpAPI + RemoteOK + ATS boards -> Filter, dedupe & save ->
     Score fit -> dashboard. Has a real runner (`workflows.run_job_search_rerank`) and
     can be triggered from the floating assistant chat (see below); this page itself
     still has no manual "Run now" button.
   - Tailor cover letter for top 3 jobs: not implemented yet - display only, no runner.
+  - Rerank existing jobs (single-step chat action, not a multi-step flow - it's just one
+    step, `scanner.run_scan`, over every job on the dashboard): rescores everything
+    against your resume/story bank/preferences - no sourcing, nothing added. Real runner
+    (`workflows.run_rescore_only`), triggerable from the floating assistant chat.
 - **Floating assistant** (bottom-right bubble, every logged-in page - `src/assistant.py`,
   `templates/chat_widget.html`): one continuous chat, not scoped to any single job or
   page, grounded in your full profile/preferences/dashboard (cross-session memory - it
   persists forever, same DB as everything else). Every action it can take is a fixed,
   code-backed one (`src.assistant.FIXED_ACTIONS` + `workflows.WORKFLOWS`'s live entries) -
-  it never improvises a step that isn't wired up:
+  it never improvises a step that isn't wired up. A message can chain up to
+  `agents.MAX_CHAIN_STEPS` (3) of these in one go - "rerank all jobs then draft a cover
+  letter for the top ranked one" runs the rerank, then resolves "top ranked" against the
+  fresh scores and drafts for it, no separate turn needed:
   - **Trigger a live workflow** in plain language - "rank/rerank my jobs" only rescores
     what's already on the dashboard; "run job search and rerank"/"find new jobs" also
     sources new listings first. Each replies with an exact, non-hallucinated summary
@@ -277,10 +281,10 @@ webapp/
     `/tools/preference_learning`'s own run button.
   - **Answer questions or just talk** using your profile/preferences/dashboard as
     context, when the message isn't asking for any of the above.
-  - **Ask for clarification** when a message clearly wants an action done but doesn't
-    cleanly match one of the above (or asks for more than one thing at once) - replies
-    with the exact list of supported actions instead of guessing or silently just
-    chatting. One action per message today - "add this job and rerank" needs two turns.
+  - **Ask for clarification** when a message (or one step of a chained message) clearly
+    wants an action done but doesn't cleanly match one of the above - replies with the
+    exact list of supported actions instead of guessing or silently just chatting, and
+    stops the chain there rather than running a later step against a bad result.
 
   Tracks which job is under discussion across turns without you repeating it (falls
   back to whichever job the last relevant turn was about; asks for clarification rather
