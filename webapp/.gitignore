@@ -17,8 +17,9 @@ instance/
 data/uploads/*
 !data/uploads/.gitkeep
 
-# SQLite database (user + progress state, not sample data)
+# SQLite database (user + progress state, not sample data) and its backups
 data/app.db
+data/backups/
 
 # Rated chatbot responses (see src/store.py rate_chat_message) - user data, not sample data
 data/results.json
