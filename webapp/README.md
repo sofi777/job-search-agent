@@ -377,6 +377,9 @@ a tab (nothing to give feedback on yet) or when `classify_turn()` (see below) sa
 this message doesn't look like it reveals a preference. Every feedback message this
 runs on gets marked checked (`chat_messages.preference_checked_at`) right after, live
 or not - see `src/learning.py` below for the on-demand version of this same check.
+When it does save a revision, the assistant's reply for that turn gets a `_Learned
+(category): text_` line appended, so the update is visible inline in the chat instead
+of only showing up on `/preferences`.
 
 **Preference learning, on demand** (`src/learning.py`, `/tools/preference_learning`):
 the live check above only ever sees a turn as it happens. `run_learning()` replays

@@ -72,9 +72,31 @@ class RunTurnTests(unittest.TestCase):
         revise_preferences.assert_not_called()
 
         # Now there's prior content - the same "reveals_preference" classification should
-        # trigger the learning call this time.
-        tailoring.run_turn(chat_session, self.job, "make it shorter", self.preferences)
+        # trigger the learning call this time. revise_preferences returns None here, so no
+        # "Learned" note should be appended to the reply.
+        assistant_message_id, _ = tailoring.run_turn(chat_session, self.job, "make it shorter", self.preferences)
         revise_preferences.assert_called_once()
+        self.assertEqual(store.get_chat_message(assistant_message_id)["content"], "ok")
+
+    @mock.patch(
+        "src.agents.revise_preferences",
+        return_value={"category": "cover_letter", "text": "keep it under 200 words"},
+    )
+    @mock.patch("src.agents.classify_turn", return_value={"needs_retrieval": False, "reveals_preference": True})
+    @mock.patch("src.agents.run_tailor_turn")
+    def test_preference_learning_note_appended_to_reply(self, run_tailor_turn, classify_turn, revise_preferences):
+        run_tailor_turn.return_value = (
+            {"reply": "Shortened it.", "artifact": "revised text"}, "m", {"prompt_tokens": 1, "completion_tokens": 1},
+        )
+        chat_session = store.get_chat_session(self.session_id)
+        store.save_artifact(self.session_id, self.job["id"], "cover_letter", "existing draft")
+
+        assistant_message_id, error = tailoring.run_turn(chat_session, self.job, "make it shorter", self.preferences)
+
+        self.assertIsNone(error)
+        saved = store.get_chat_message(assistant_message_id)
+        self.assertTrue(saved["content"].startswith("Shortened it."))
+        self.assertIn("Learned (cover_letter): keep it under 200 words", saved["content"])
 
     @mock.patch("src.agents.revise_preferences", side_effect=RuntimeError("classifier flaked"))
     @mock.patch("src.agents.classify_turn", return_value={"needs_retrieval": False, "reveals_preference": True})

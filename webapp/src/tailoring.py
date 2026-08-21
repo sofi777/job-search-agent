@@ -61,8 +61,25 @@ def run_turn(chat_session, job, display_message, preferences):
         # alongside it (chat_messages.artifact_text) and reused for revise_preferences below.
         artifact_text = result.get("answer", "") if tab == "qa" else (result.get("artifact") or current_text)
 
+        # Preferences stay global/shared across every pane on purpose - feedback given to one
+        # model should improve every model's output, not just that pane's. Run before saving
+        # the assistant reply so a learned preference can be surfaced inline in that same
+        # message, visible to the user rather than a silent DB write.
+        reply_text = result.get("reply", "")
+        if check_preferences:
+            try:
+                revision = agents.revise_preferences(tab, display_message, artifact_text, preferences, model)
+                if revision:
+                    store.save_preference(revision["category"], revision["text"])
+                    reply_text += f"\n\n_Learned ({revision['category']}): {revision['text']}_"
+            except RuntimeError:
+                # This is a secondary, best-effort step - the message/artifact above already
+                # generated and saved successfully, so a broken model reply here shouldn't
+                # discard that and report the whole turn as failed.
+                pass
+
         assistant_message_id = store.add_chat_message(
-            session_id, job["id"], tab, "assistant", result.get("reply", ""), used_model,
+            session_id, job["id"], tab, "assistant", reply_text, used_model,
             response_time_seconds=response_time_seconds,
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
@@ -78,19 +95,6 @@ def run_turn(chat_session, job, display_message, preferences):
                 store.update_qa(qa_list[-1]["id"], result.get("answer", ""))
         elif result.get("artifact"):
             store.save_artifact(session_id, job["id"], tab, result["artifact"])
-
-        # Preferences stay global/shared across every pane on purpose - feedback given to one
-        # model should improve every model's output, not just that pane's.
-        if check_preferences:
-            try:
-                revision = agents.revise_preferences(tab, display_message, artifact_text, preferences, model)
-                if revision:
-                    store.save_preference(revision["category"], revision["text"])
-            except RuntimeError:
-                # This is a secondary, best-effort step - the message/artifact above already
-                # generated and saved successfully, so a broken model reply here shouldn't
-                # discard that and report the whole turn as failed.
-                pass
         # classify_turn (above) always ran for this message regardless of check_preferences,
         # so it's fully considered either way - mark it so a /tools/preference_learning bulk
         # run never re-spends a call on it. Only reached once the turn's succeeded end to end;
