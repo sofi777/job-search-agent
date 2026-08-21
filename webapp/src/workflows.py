@@ -28,6 +28,10 @@ def run_job_search_rerank(mode="live"):
     summary = {"per_component": {}, "added": 0, "scan_run_id": None, "rescored": 0, "scan_error": None}
 
     for component_id, meta in comp.COMPONENTS.items():
+        if not test_mode and not meta.get("enabled", True):
+            summary["per_component"][component_id] = {"fetched": 0, "added": 0, "error": "disabled - not run"}
+            continue
+
         config = store.get_component_config(component_id, meta["default_config"](store.profile))
         if component_id == "serpapi":
             config = {**config, "followed_companies": store.get_followed_companies()}

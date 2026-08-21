@@ -870,6 +870,9 @@ def component_run(component_id):
     # separate stage (src/store.py's apply_run_filters, src/filters.py) run explicitly from
     # the run summary below, or from the Filter & dedupe tool - not chained here.
     run_id = store.start_run(component_id, "test" if test_mode else "live")
+    if not test_mode and not comp.COMPONENTS[component_id].get("enabled", True):
+        store.save_fetch_results(run_id, [], "This component is disabled - see src/components/__init__.py")
+        return redirect(url_for("component_detail", component_id=component_id, run=run_id))
     try:
         listings, error = comp.COMPONENTS[component_id]["run"](config, test_mode)
     except Exception as e:

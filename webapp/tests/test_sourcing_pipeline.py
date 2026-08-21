@@ -143,6 +143,18 @@ class ComponentRunRouteTests(unittest.TestCase):
         self.assertEqual(run["status"], "fetched")
         self.assertTrue(store.get_run_results(run_id))  # already staged, no filter needed to see them
 
+    def test_disabled_component_live_run_is_blocked_but_test_mode_still_works(self):
+        from unittest import mock
+        from src import components as comp
+        with mock.patch.dict(comp.COMPONENTS["remoteok"], {"enabled": False}):
+            live_resp = self.client.post("/components/remoteok/run", data={"mode": "live"})
+            run_id = int(live_resp.headers["Location"].rsplit("run=", 1)[1])
+            self.assertIn("disabled", store.get_run(run_id)["error_message"])
+            self.assertFalse(store.get_run_results(run_id))
+
+            test_resp = self.client.post("/components/remoteok/run", data={"mode": "test"})
+            self.assertEqual(test_resp.status_code, 302)
+
     def test_run_page_shows_every_fetched_listing_no_filter_button(self):
         resp = self.client.post("/components/serpapi/run", data={"mode": "test"})
         run_id = int(resp.headers["Location"].rsplit("run=", 1)[1])

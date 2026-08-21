@@ -55,10 +55,20 @@ running live often.
 
 ## RemoteOK
 
+**Currently disabled** (`"enabled": False` in `__init__.py`, 2026-08-20, at the user's
+request to cut down on live calls) - live runs are blocked, manual and via the
+"Job search and rerank" workflow alike; test mode still works. Flip it back to `True` to
+re-enable.
+
 Fetches RemoteOK's public listings API and filters by keyword/seniority. No account, no
 key, no cost - live and test mode both just skip the real network call in test mode.
 
 ## ATS boards
+
+**Currently disabled** (`"enabled": False` in `__init__.py`, 2026-08-20, at the user's
+request to cut down on live calls) - live runs are blocked, manual and via the
+"Job search and rerank" workflow alike; test mode still works. Flip it back to `True` to
+re-enable.
 
 Fetches each configured company's public job board directly - Lever, Greenhouse, Ashby,
 or Workable. None of these four require a key or account; they're public,

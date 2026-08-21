@@ -86,6 +86,19 @@ class WorkflowRunnerTests(unittest.TestCase):
             summary = workflows.run_job_search_rerank(mode="test")
         self.assertIn("no api key", summary["per_component"]["serpapi"]["error"])
 
+    def test_disabled_component_is_skipped_live_but_still_runs_in_test_mode(self):
+        with mock.patch.dict(comp.COMPONENTS["remoteok"], {"enabled": False}), \
+             _mock_component_run("remoteok", listings=[{**LISTING, "url": "https://x.com/workflow-2"}]), \
+             _mock_component_run("serpapi", listings=[]), _mock_component_run("ats", listings=[]), \
+             mock.patch("src.scanner.run_scan", return_value=999):
+            live_summary = workflows.run_job_search_rerank(mode="live")
+            comp.COMPONENTS["remoteok"]["run"].assert_not_called()
+            self.assertEqual(live_summary["per_component"]["remoteok"], {"fetched": 0, "added": 0, "error": "disabled - not run"})
+
+            test_summary = workflows.run_job_search_rerank(mode="test")
+            comp.COMPONENTS["remoteok"]["run"].assert_called_once()
+            self.assertEqual(test_summary["per_component"]["remoteok"]["added"], 1)
+
 
 class RescoreOnlyRunnerTests(unittest.TestCase):
     def test_rescores_without_touching_any_sourcing_component(self):

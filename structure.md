@@ -294,8 +294,12 @@ with it immediately, without saving - so trying values out never requires saving
 and Run never silently uses stale saved settings instead of what's on screen. Routes
 in `app.py`'s "sourcing components" section; `src/components/__init__.py`'s
 `COMPONENTS` registry maps each id to its `default_config(profile)`/`run(config,
-test_mode)` functions - see that package's own `README.md` for what each component
-does and its API key setup. `store.get_component_config` returns the saved config if
+test_mode)` functions and an `"enabled"` flag - see that package's own `README.md`
+for what each component does and its API key setup. `"enabled": False` stops that
+component's live `run()` from being called at all (checked in both `app.py`'s manual
+run route and `workflows.run_job_search_rerank`); test mode is unaffected either way
+since it never makes a real call. remoteok/ats are currently disabled at the user's
+request, to cut down on live calls - flip back to `True` in that file to re-enable. `store.get_component_config` returns the saved config if
 one exists, otherwise `default_config(profile)` computed live on every read (never
 persisted) - so an unsaved page keeps tracking profile edits (roles, eligible
 countries, ...) instead of freezing as of whenever it was first opened; only "Save
